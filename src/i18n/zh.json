@@ -1,0 +1,22 @@
+{
+  "generate":        "生成临时邮箱",
+  "copy":            "复制",
+  "copied":          "已复制",
+  "refresh":         "刷新",
+  "no_mail":         "暂无邮件，等待收件中...",
+  "auto_fill":       "自动填入页面",
+  "discard":         "丢弃此邮箱",
+  "settings":        "设置",
+  "back":            "返回",
+  "loading":         "加载中...",
+  "mail_from":       "发件人",
+  "mail_subject":    "主题",
+  "mail_date":       "时间",
+  "confirm_fill":    "确认将此邮箱填入页面输入框？",
+  "confirm_discard": "确认丢弃此邮箱？丢弃后将无法恢复。",
+  "error_network":   "网络异常，请检查连接",
+  "error_rate_limit":"请求过于频繁，请稍后重试",
+  "error_no_input":  "页面上未找到邮箱输入框",
+  "lang_zh":         "中文",
+  "lang_en":         "English"
+}
