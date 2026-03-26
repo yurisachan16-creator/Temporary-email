@@ -23,8 +23,8 @@ let currentLanguage = 'zh';
  *                        不支持的代码自动回退到 "en"
  */
 export function setLanguage(lang) {
-  // TODO: 待实现
-  throw new Error('未实现：setLanguage');
+  // 不在支持列表中则回退到英文
+  currentLanguage = SUPPORTED_LANGUAGES.includes(lang) ? lang : 'en';
 }
 
 /**
@@ -41,6 +41,10 @@ export function getLanguage() {
  * @returns {string} 翻译文本；当前语言缺失时回退到英文；均缺失时返回 key 本身
  */
 export function t(key) {
-  // TODO: 待实现
-  throw new Error('未实现：t');
+  const pack     = translations[currentLanguage] || {};
+  const fallback = translations['en'] || {};
+  // 优先当前语言，缺失时回退英文，均无则返回 key 本身
+  if (key in pack)     return pack[key];
+  if (key in fallback) return fallback[key];
+  return key;
 }

@@ -30,8 +30,9 @@ const PURIFY_CONFIG = {
  * @returns {string} 消毒后的安全 HTML 字符串；输入为空时返回 ""
  */
 export function sanitizeHTML(html) {
-  // TODO: 待实现
-  throw new Error('未实现：sanitizeHTML');
+  // null / undefined / 空字符串 直接返回空字符串
+  if (html == null || html === '') return '';
+  return DOMPurify.sanitize(String(html), PURIFY_CONFIG);
 }
 
 /**
@@ -40,6 +41,11 @@ export function sanitizeHTML(html) {
  * @returns {string} 转义后的安全字符串；输入为空时返回 ""
  */
 export function sanitizeText(text) {
-  // TODO: 待实现
-  throw new Error('未实现：sanitizeText');
+  if (text == null) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
