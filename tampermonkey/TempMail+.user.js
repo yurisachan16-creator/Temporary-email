@@ -123,9 +123,18 @@ function t(key) {
 function gmFetch(url) {
   return new Promise((resolve, reject) => {
     GM_xmlhttpRequest({
-      method:    'GET',
+      method:  'GET',
       url,
-      timeout:   15_000,
+      timeout: 15_000,
+      // 显式覆盖 Referer / Origin，避免带上当前页面域名（如 bilibili.com）
+      // 部分网站会因收到非预期的 Referer 而返回 403
+      headers: {
+        'Referer': 'https://www.1secmail.com/',
+        'Origin':  'https://www.1secmail.com/',
+        'Accept':  'application/json, */*',
+      },
+      // 不携带当前页面的 Cookie，防止凭证污染请求
+      anonymous: true,
       onload(res) {
         if (res.status >= 200 && res.status < 300) {
           try {
