@@ -27,18 +27,31 @@ const EMAIL_SELECTORS = [
  * @returns {HTMLInputElement|null} 匹配的输入框元素，未找到或 doc 为 null 时返回 null
  */
 export function findEmailInput(doc) {
-  // TODO: 待实现
-  throw new Error('未实现：findEmailInput');
+  if (!doc) return null;
+  // 按优先级逐一尝试选择器，返回第一个匹配项
+  for (const selector of EMAIL_SELECTORS) {
+    const input = doc.querySelector(selector);
+    if (input) return input;
+  }
+  return null;
 }
 
 /**
  * 将邮箱地址填入指定输入框，并触发 input 和 change 事件
- * （触发事件是为了让 React、Vue 等框架感知到值的变化）
+ * 触发事件是为了让 React、Vue 等框架感知到值的变化
  * @param {HTMLInputElement|null} input - 目标输入框元素
  * @param {string|null} email           - 要填入的邮箱地址
  * @returns {boolean} 成功填入返回 true，参数无效时返回 false
  */
 export function fillEmail(input, email) {
-  // TODO: 待实现
-  throw new Error('未实现：fillEmail');
+  // 参数无效时提前返回 false，不抛出错误
+  if (!input || !email) return false;
+
+  input.value = email;
+
+  // 分别触发 input 和 change 事件，确保框架双向绑定感知到新值
+  input.dispatchEvent(new Event('input',  { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+
+  return true;
 }

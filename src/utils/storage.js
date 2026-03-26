@@ -26,8 +26,10 @@ function isValidEmail(email) {
  * @returns {Promise<void>}
  */
 export async function saveEmail(email) {
-  // TODO: 待实现
-  throw new Error('未实现：saveEmail');
+  if (!isValidEmail(email)) {
+    throw new Error('邮箱格式无效');
+  }
+  await browser.storage.local.set({ [KEY_CURRENT_EMAIL]: email });
 }
 
 /**
@@ -35,8 +37,9 @@ export async function saveEmail(email) {
  * @returns {Promise<string|null>} 邮箱地址，或 null（未保存时）
  */
 export async function getEmail() {
-  // TODO: 待实现
-  throw new Error('未实现：getEmail');
+  const result = await browser.storage.local.get(KEY_CURRENT_EMAIL);
+  // 键不存在时返回 null
+  return result[KEY_CURRENT_EMAIL] ?? null;
 }
 
 /**
@@ -44,8 +47,7 @@ export async function getEmail() {
  * @returns {Promise<void>}
  */
 export async function clearEmail() {
-  // TODO: 待实现
-  throw new Error('未实现：clearEmail');
+  await browser.storage.local.remove(KEY_CURRENT_EMAIL);
 }
 
 /**
@@ -53,8 +55,9 @@ export async function clearEmail() {
  * @returns {Promise<string[]>} 邮箱字符串数组，无记录时返回空数组
  */
 export async function getAllEmails() {
-  // TODO: 待实现
-  throw new Error('未实现：getAllEmails');
+  const result = await browser.storage.local.get(KEY_EMAIL_LIST);
+  // 键不存在时返回空数组
+  return result[KEY_EMAIL_LIST] ?? [];
 }
 
 /**
@@ -63,6 +66,8 @@ export async function getAllEmails() {
  * @returns {Promise<void>}
  */
 export async function saveAllEmails(emails) {
-  // TODO: 待实现
-  throw new Error('未实现：saveAllEmails');
+  if (emails.length > MAX_EMAIL_COUNT) {
+    throw new Error(`最多保存 ${MAX_EMAIL_COUNT} 个邮箱`);
+  }
+  await browser.storage.local.set({ [KEY_EMAIL_LIST]: emails });
 }

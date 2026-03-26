@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <title>TempMail+</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+
+  <!-- 顶部标题栏 -->
+  <header class="header">
+    <span class="header-icon">✉</span>
+    <h1 class="header-title">TempMail+</h1>
+  </header>
+
+  <!-- ① 空状态：尚未生成邮箱 -->
+  <div id="view-empty">
+    <div class="empty-view">
+      <div class="empty-icon">📬</div>
+      <p class="empty-desc">
+        使用临时邮箱保护您的真实邮件地址<br />
+        注册完成后可直接丢弃
+      </p>
+      <button id="btn-generate" class="btn btn-primary btn-lg">
+        生成临时邮箱
+      </button>
+    </div>
+  </div>
+
+  <!-- ② 主视图：已有邮箱时展示 -->
+  <div id="view-main" hidden>
+
+    <!-- 邮箱地址栏 -->
+    <div class="email-bar">
+      <span id="email-address" class="email-address" title=""></span>
+      <button id="btn-copy" class="btn btn-outline">复制</button>
+    </div>
+
+    <!-- 操作按钮行 -->
+    <div class="actions">
+      <button id="btn-discard" class="btn btn-danger-outline">🗑 丢弃此邮箱</button>
+    </div>
+
+    <!-- 收件箱标题行 -->
+    <div class="inbox-header">
+      <span class="inbox-title">收件箱</span>
+      <button id="btn-refresh" class="btn btn-outline btn-sm">刷新</button>
+    </div>
+
+    <!-- 邮件列表区域 -->
+    <div id="mail-list"></div>
+
+  </div>
+
+  <!-- ③ 错误横幅（按需显示） -->
+  <div id="view-error" class="error-banner" hidden></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
