@@ -6,6 +6,22 @@
 
 ## [未发布]
 
+## [1.1.0] - 2026-03-26
+
+### 修复
+- **Tampermonkey 403 问题**：`gmFetch` 升级为双提供商策略：
+  优先请求 1secmail，遇到 403 / 429 / 5xx / 网络错误时自动回退到 mail.tm
+- **丢弃邮箱**：`handleDiscard` 现在会同步删除 mail.tm 远端账号并清除完整会话
+
+### 新增（Tampermonkey 版）
+- `gmFetch` 支持 POST 请求、自定义 headers、body 序列化、204 处理
+- `createMailTmSession`：自动创建 mail.tm 账号并获取 JWT token
+- `mailTmRequest`：带 Bearer 认证的请求封装，401 时自动刷新 token 后重试
+- `resolveSession`：根据邮箱地址自动判断当前提供商（1secmail / mail.tm）
+- `apiDiscardCurrentSession`：丢弃邮箱时删除 mail.tm 账号
+- 会话对象（provider / token / accountId）持久化到 `GM_setValue`
+- `tests/tampermonkey/gmApi.test.js` 扩展至 102 个测试用例，覆盖双提供商全路径
+
 ## [1.0.0] - 2026-03-26
 
 ### 新增
