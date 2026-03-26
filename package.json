@@ -1,16 +1,19 @@
 {
   "name": "tempmail-plus",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "临时邮箱浏览器插件 - TempMail+",
   "private": true,
   "scripts": {
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "generate:icons": "node scripts/generate-icons.js"
+    "generate:icons": "node scripts/generate-icons.js",
+    "copy:libs": "node scripts/copy-libs.js",
+    "setup": "npm run generate:icons && npm run copy:libs"
   },
   "dependencies": {
-    "dompurify": "^3.1.0"
+    "dompurify": "^3.1.0",
+    "webextension-polyfill": "^0.12.0"
   },
   "devDependencies": {
     "@babel/core": "^7.24.0",

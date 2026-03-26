@@ -17,34 +17,37 @@
   <div id="view-empty">
     <div class="empty-view">
       <div class="empty-icon">📬</div>
-      <p class="empty-desc">
-        使用临时邮箱保护您的真实邮件地址<br />
-        注册完成后可直接丢弃
-      </p>
-      <button id="btn-generate" class="btn btn-primary btn-lg">
+      <p id="empty-desc" class="empty-desc"></p>
+      <button id="btn-generate" class="btn btn-primary btn-lg" data-i18n="generate">
         生成临时邮箱
       </button>
     </div>
   </div>
 
-  <!-- ② 主视图：已有邮箱时展示 -->
+  <!-- ② 主视图：已有邮箱 -->
   <div id="view-main" hidden>
 
     <!-- 邮箱地址栏 -->
     <div class="email-bar">
       <span id="email-address" class="email-address" title=""></span>
-      <button id="btn-copy" class="btn btn-outline">复制</button>
+      <button id="btn-copy" class="btn btn-outline" data-i18n="copy">复制</button>
     </div>
 
     <!-- 操作按钮行 -->
     <div class="actions">
-      <button id="btn-discard" class="btn btn-danger-outline">🗑 丢弃此邮箱</button>
+      <button id="btn-autofill" class="btn btn-primary btn-sm" data-i18n="auto_fill">
+        自动填入
+      </button>
+      <button id="btn-discard" class="btn btn-danger-outline" data-i18n="discard">
+        🗑 丢弃
+      </button>
     </div>
 
     <!-- 收件箱标题行 -->
     <div class="inbox-header">
-      <span class="inbox-title">收件箱</span>
-      <button id="btn-refresh" class="btn btn-outline btn-sm">刷新</button>
+      <span data-i18n="inbox_title">收件箱</span>
+      <span id="poll-indicator" class="poll-indicator" hidden title="自动刷新中">●</span>
+      <button id="btn-refresh" class="btn btn-outline btn-sm" data-i18n="refresh">刷新</button>
     </div>
 
     <!-- 邮件列表区域 -->
@@ -52,9 +55,43 @@
 
   </div>
 
-  <!-- ③ 错误横幅（按需显示） -->
+  <!-- ③ 邮件详情视图（F-04） -->
+  <div id="view-detail" hidden>
+
+    <!-- 详情标题行 -->
+    <div class="detail-header">
+      <button id="btn-back" class="btn btn-outline btn-sm" data-i18n="back">← 返回</button>
+      <span id="detail-subject" class="detail-subject"></span>
+    </div>
+
+    <!-- 发件人与时间元信息 -->
+    <div class="detail-meta">
+      <div id="detail-from" class="detail-meta-row"></div>
+      <div id="detail-date" class="detail-meta-row detail-meta-date"></div>
+    </div>
+
+    <!-- 邮件正文（HTML 经 DOMPurify 消毒后渲染） -->
+    <div id="detail-body" class="detail-body"></div>
+
+  </div>
+
+  <!-- 错误横幅（3 秒后自动消失） -->
   <div id="view-error" class="error-banner" hidden></div>
 
+  <!-- Toast 轻提示（成功操作反馈） -->
+  <div id="toast" class="toast"></div>
+
+  <!--
+    脚本加载顺序（顺序重要）：
+    1. browser-polyfill  — 注入 browser.* API，统一三端兼容
+    2. dompurify         — 注入全局 DOMPurify，邮件 HTML 消毒
+    3. translations      — 注入 window.TRANSLATIONS 语言包
+    4. popup             — 弹窗主逻辑（依赖以上三个全局对象）
+  -->
+  <script src="../lib/browser-polyfill.min.js"></script>
+  <script src="../lib/dompurify.min.js"></script>
+  <script src="../i18n/translations.js"></script>
   <script src="popup.js"></script>
+
 </body>
 </html>

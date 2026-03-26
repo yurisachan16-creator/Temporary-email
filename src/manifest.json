@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TempMail+",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "快速生成临时邮箱，保护您的真实邮件地址",
   "default_locale": "zh_CN",
 
@@ -15,9 +15,24 @@
     }
   },
 
+  "background": {
+    "service_worker": "background/background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "content/content-script.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+
   "permissions": [
     "storage",
-    "clipboardWrite"
+    "clipboardWrite",
+    "tabs"
   ],
 
   "host_permissions": [
