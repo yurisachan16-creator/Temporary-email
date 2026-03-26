@@ -130,9 +130,12 @@ function gmFetch(url) {
         // 使用真实浏览器 UA，避免被识别为脚本请求
         'User-Agent': navigator.userAgent,
         'Accept':     'application/json, text/plain, */*',
-        // 只设置 Referer，不设置 Origin（Origin 仅用于 POST/PUT 跨域，GET 请求
-        // 设置 Origin 会触发服务器 CORS 验证逻辑，可能导致 403）
-        'Referer': 'https://www.1secmail.com/',
+        // 不设置 Referer：
+        //   - 直接 API 调用本来就没有 Referer，去掉最自然
+        //   - 设置 Referer 为 1secmail.com 却不带对应 Cookie，
+        //     会被服务器 WAF 识别为"伪造来源"，触发 403
+        // 不设置 Origin：
+        //   - GET 请求不需要 Origin，设置反而触发 CORS 验证
       },
       // 不携带当前页面（如 bilibili）的 Cookie
       anonymous: true,

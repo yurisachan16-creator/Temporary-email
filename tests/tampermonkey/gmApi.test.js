@@ -38,7 +38,7 @@ function gmFetch(url) {
       headers: {
         'User-Agent': navigator.userAgent,
         'Accept':     'application/json, text/plain, */*',
-        'Referer':    'https://www.1secmail.com/',
+        // 不设置 Referer / Origin（与主脚本保持一致）
       },
       anonymous: true,
       onload(res) {
@@ -157,14 +157,14 @@ describe('gmFetch', () => {
     await expect(gmFetch('https://any.url')).rejects.toThrow('JSON 解析失败');
   });
 
-  test('请求时传入正确的 Referer 头（不携带 bilibili 等外部域名）', () => {
+  test('请求时不发送 Referer 头（发送假 Referer 会触发服务器防伪造检测）', () => {
     mockOnload(200, '[]');
     gmFetch('https://any.url');
     const callArgs = GM_xmlhttpRequest.mock.calls[0][0];
-    expect(callArgs.headers['Referer']).toBe('https://www.1secmail.com/');
+    expect(callArgs.headers['Referer']).toBeUndefined();
   });
 
-  test('请求时不携带 Origin 头（防止触发服务器 CORS 验证）', () => {
+  test('请求时不携带 Origin 头（GET 请求设置 Origin 会触发 CORS 验证）', () => {
     mockOnload(200, '[]');
     gmFetch('https://any.url');
     const callArgs = GM_xmlhttpRequest.mock.calls[0][0];
