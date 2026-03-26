@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TempMail+
 // @namespace    https://github.com/yurisachan16-creator/Temporary-email
-// @version      1.0.0
+// @version      1.1.0
 // @description  一键生成临时邮箱，自动填入表单，查收邮件，用完即弃。支持中文/英文。
 // @author       yurisachan16-creator
 // @match        *://*/*
@@ -9,6 +9,7 @@
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @connect      www.1secmail.com
+// @connect      api.mail.tm
 // @run-at       document-idle
 // @require      https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js
 // ==/UserScript==
@@ -18,7 +19,7 @@
  *
  * 架构说明：
  *   - 使用 Shadow DOM 隔离面板样式，避免与目标页面 CSS 冲突
- *   - 使用 GM_xmlhttpRequest 绕过跨域限制，直接请求 1secmail API
+ *   - 使用 GM_xmlhttpRequest 绕过跨域限制，优先请求 1secmail，必要时回退 mail.tm
  *   - 使用 GM_getValue / GM_setValue 持久化存储邮箱地址
  *   - 自动填入直接操作页面 DOM（无需 content-script）
  *   - DOMPurify 由 @require 加载，消毒邮件 HTML 正文
@@ -37,10 +38,17 @@ if (document.getElementById('tempmail-plus-root')) {
    常量与运行时状态
 ────────────────────────────────────────────────────── */
 const API_BASE      = 'https://www.1secmail.com/api/v1/';
+const MAILTM_BASE   = 'https://api.mail.tm';
 const STORAGE_KEY   = 'tm_currentEmail';
+const SESSION_KEY   = 'tm_providerSession';
 const POLL_INTERVAL = 10_000;  // 轮询间隔（毫秒）
+const PROVIDERS     = {
+  oneSecMail: '1secmail',
+  mailTm:     'mailtm',
+};
 
 let currentEmail = null;   // 当前邮箱地址
+let currentSession = null; // 当前邮箱会话（提供商、凭据等）
 let pollTimer    = null;   // setInterval 句柄
 let knownMailIds = new Set();  // 已知邮件 ID，用于检测新邮件
 let isDragging   = false;      // 拖拽状态
@@ -116,68 +124,390 @@ function t(key) {
 ────────────────────────────────────────────────────── */
 
 /**
+ * 构造统一的 HTTP 错误对象，便于上层按状态码分支处理
+ * @param {number} status
+ * @param {string} responseText
+ * @returns {Error}
+ */
+function createHttpError(status, responseText) {
+  const hint = responseText
+    ? `：${responseText.slice(0, 120)}`
+    : '';
+  const error = new Error(`${t('error_network')}（${status}${hint}）`);
+  error.status = status;
+  error.responseText = responseText || '';
+  return error;
+}
+
+/**
+ * 构造统一的网络错误对象
+ * @param {string} code
+ * @param {string} detail
+ * @returns {Error}
+ */
+function createTransportError(code, detail) {
+  const error = new Error(`${t('error_network')}（${detail}）`);
+  error.code = code;
+  return error;
+}
+
+/**
  * 将 GM_xmlhttpRequest 包装为 Promise，用于跨域 API 请求
  * @param {string} url
+ * @param {object} [options]
  * @returns {Promise<any>} 解析后的 JSON 数据
  */
-function gmFetch(url) {
+function gmFetch(url, options = {}) {
+  const {
+    method = 'GET',
+    headers = {},
+    body,
+    responseType = 'json',
+    anonymous = true,
+  } = options;
+
   return new Promise((resolve, reject) => {
+    const requestHeaders = {
+      // 使用真实浏览器 UA，避免被识别为脚本请求
+      'User-Agent': navigator.userAgent,
+      'Accept':     'application/json, text/plain, */*',
+      ...headers,
+    };
+
     GM_xmlhttpRequest({
-      method:  'GET',
+      method,
       url,
       timeout: 15_000,
-      headers: {
-        // 使用真实浏览器 UA，避免被识别为脚本请求
-        'User-Agent': navigator.userAgent,
-        'Accept':     'application/json, text/plain, */*',
-        // 不设置 Referer：
-        //   - 直接 API 调用本来就没有 Referer，去掉最自然
-        //   - 设置 Referer 为 1secmail.com 却不带对应 Cookie，
-        //     会被服务器 WAF 识别为"伪造来源"，触发 403
-        // 不设置 Origin：
-        //   - GET 请求不需要 Origin，设置反而触发 CORS 验证
-      },
+      headers: requestHeaders,
       // 不携带当前页面（如 bilibili）的 Cookie
-      anonymous: true,
+      anonymous,
+      data: body === undefined
+        ? undefined
+        : (typeof body === 'string' ? body : JSON.stringify(body)),
       onload(res) {
         if (res.status >= 200 && res.status < 300) {
+          if (responseType === 'text') {
+            resolve(res.responseText || '');
+            return;
+          }
+
+          if (res.status === 204 || !res.responseText) {
+            resolve(null);
+            return;
+          }
+
           try {
             resolve(JSON.parse(res.responseText));
           } catch {
             reject(new Error('JSON 解析失败'));
           }
         } else {
-          // 将响应体前 120 字符附加到错误信息，方便排查
-          const hint = res.responseText
-            ? `：${res.responseText.slice(0, 120)}`
-            : '';
-          reject(new Error(`${t('error_network')}（${res.status}${hint}）`));
+          reject(createHttpError(res.status, res.responseText));
         }
       },
-      onerror()   { reject(new Error(`${t('error_network')}（连接失败）`)); },
-      ontimeout() { reject(new Error(`${t('error_network')}（超时）`)); },
+      onerror()   { reject(createTransportError('NETWORK', '连接失败')); },
+      ontimeout() { reject(createTransportError('TIMEOUT', '超时')); },
     });
   });
 }
 
 /* ──────────────────────────────────────────────────────
-   API 调用（1secmail）
+   API 调用（双提供商）
 ────────────────────────────────────────────────────── */
+
+/**
+ * 基于邮箱地址构造会话对象
+ * @param {string} email
+ * @param {string} provider
+ * @param {object} [extra]
+ * @returns {object}
+ */
+function buildSession(email, provider, extra = {}) {
+  const [login = '', domain = ''] = String(email || '').split('@');
+  return {
+    provider,
+    email,
+    login,
+    domain,
+    ...extra,
+  };
+}
+
+/**
+ * 判断当前错误是否值得回退到备用服务
+ * @param {Error} error
+ * @returns {boolean}
+ */
+function shouldFallbackToMailTm(error) {
+  return Boolean(
+    error
+    && (
+      error.code === 'NETWORK'
+      || error.code === 'TIMEOUT'
+      || error.status === 403
+      || error.status === 429
+      || error.status >= 500
+    )
+  );
+}
+
+/**
+ * 生成随机用户名，避免 mail.tm 账号碰撞
+ * @returns {string}
+ */
+function generateRandomLogin() {
+  return `tmplus${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * 生成临时密码，仅用于 mail.tm API 认证
+ * @returns {string}
+ */
+function generateTempPassword() {
+  return `P${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+}
+
+/**
+ * 将发件人对象格式化为可读字符串
+ * @param {string|object} sender
+ * @returns {string}
+ */
+function formatSender(sender) {
+  if (!sender) return '';
+  if (typeof sender === 'string') return sender;
+  if (sender.name && sender.address) return `${sender.name} <${sender.address}>`;
+  return sender.address || sender.name || '';
+}
+
+/**
+ * 归一化 mail.tm 邮件列表
+ * @param {object} data
+ * @returns {Array<object>}
+ */
+function normalizeMailTmMessages(data) {
+  const items = Array.isArray(data && data['hydra:member'])
+    ? data['hydra:member']
+    : [];
+
+  return items.map((item) => ({
+    id:      item.id,
+    from:    formatSender(item.from),
+    subject: item.subject || '',
+    date:    item.createdAt || item.updatedAt || '',
+  }));
+}
+
+/**
+ * 归一化 mail.tm 邮件详情
+ * @param {object} data
+ * @returns {object}
+ */
+function normalizeMailTmMessage(data) {
+  return {
+    id:       data.id,
+    from:     formatSender(data.from),
+    subject:  data.subject || '',
+    date:     data.createdAt || data.updatedAt || '',
+    htmlBody: Array.isArray(data.html) ? data.html.join('\n') : '',
+    textBody: data.text || '',
+  };
+}
+
+/**
+ * 获取可用 mail.tm 域名
+ * @returns {Promise<string>}
+ */
+async function mailTmGetDomain() {
+  const data = await gmFetch(`${MAILTM_BASE}/domains`);
+  const domains = Array.isArray(data && data['hydra:member'])
+    ? data['hydra:member']
+    : [];
+  const activeDomain = domains.find((item) => item.isActive && !item.isPrivate) || domains[0];
+  if (!activeDomain || !activeDomain.domain) {
+    throw new Error('mail.tm 域名列表为空');
+  }
+  return activeDomain.domain;
+}
+
+/**
+ * 创建 mail.tm 账号并获取访问令牌
+ * @returns {Promise<object>}
+ */
+async function createMailTmSession() {
+  const domain = await mailTmGetDomain();
+  const password = generateTempPassword();
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const login = generateRandomLogin();
+    const email = `${login}@${domain}`;
+
+    try {
+      const account = await gmFetch(`${MAILTM_BASE}/accounts`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: { address: email, password },
+      });
+      const tokenData = await gmFetch(`${MAILTM_BASE}/token`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: { address: email, password },
+      });
+
+      return buildSession(email, PROVIDERS.mailTm, {
+        accountId: account && account.id,
+        password,
+        token: tokenData && tokenData.token,
+      });
+    } catch (error) {
+      // 账号碰撞时重试一次随机用户名，其他错误直接抛出
+      if (error.status !== 422 || attempt === 2) {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error('mail.tm 账号创建失败');
+}
+
+/**
+ * 确保 mail.tm 会话拥有可用 token
+ * @param {object} session
+ * @param {boolean} [forceRefresh]
+ * @returns {Promise<string>}
+ */
+async function ensureMailTmToken(session, forceRefresh = false) {
+  if (!forceRefresh && session.token) {
+    return session.token;
+  }
+
+  const tokenData = await gmFetch(`${MAILTM_BASE}/token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: {
+      address:  session.email,
+      password: session.password,
+    },
+  });
+
+  session.token = tokenData && tokenData.token;
+  persistSession(session);
+  return session.token;
+}
+
+/**
+ * 发送带认证的 mail.tm 请求，401 时自动刷新 token 后重试
+ * @param {object} session
+ * @param {string} path
+ * @param {object} [options]
+ * @returns {Promise<any>}
+ */
+async function mailTmRequest(session, path, options = {}) {
+  const execute = async () => {
+    const token = await ensureMailTmToken(session);
+    return gmFetch(`${MAILTM_BASE}${path}`, {
+      ...options,
+      headers: {
+        ...(options.headers || {}),
+        Authorization: `Bearer ${token}`,
+      },
+    });
+  };
+
+  try {
+    return await execute();
+  } catch (error) {
+    if (error.status !== 401 || !session.password) {
+      throw error;
+    }
+
+    await ensureMailTmToken(session, true);
+    return execute();
+  }
+}
+
+/**
+ * 根据邮箱解析当前提供商会话
+ * @param {string} login
+ * @param {string} domain
+ * @returns {object}
+ */
+function resolveSession(login, domain) {
+  const email = `${login}@${domain}`;
+
+  if (currentSession && currentSession.email === email) {
+    return currentSession;
+  }
+
+  const savedSession = readSavedSession();
+  if (savedSession && savedSession.email === email) {
+    currentSession = savedSession;
+    return currentSession;
+  }
+
+  currentSession = buildSession(email, PROVIDERS.oneSecMail);
+  return currentSession;
+}
 
 /** 生成随机临时邮箱，返回邮箱地址字符串 */
 async function apiGenerateEmail() {
-  const data = await gmFetch(`${API_BASE}?action=genRandomMailbox&count=1`);
-  return data[0];
+  try {
+    const data = await gmFetch(`${API_BASE}?action=genRandomMailbox&count=1`);
+    currentSession = buildSession(data[0], PROVIDERS.oneSecMail);
+  } catch (error) {
+    if (!shouldFallbackToMailTm(error)) {
+      throw error;
+    }
+
+    currentSession = await createMailTmSession();
+  }
+
+  return currentSession.email;
 }
 
 /** 获取收件列表 */
 async function apiGetMessages(login, domain) {
+  const session = resolveSession(login, domain);
+
+  if (session.provider === PROVIDERS.mailTm) {
+    const data = await mailTmRequest(session, '/messages');
+    return normalizeMailTmMessages(data);
+  }
+
   return gmFetch(`${API_BASE}?action=getMessages&login=${login}&domain=${domain}`);
 }
 
 /** 读取单封邮件完整内容 */
 async function apiReadMessage(login, domain, id) {
+  const session = resolveSession(login, domain);
+
+  if (session.provider === PROVIDERS.mailTm) {
+    const data = await mailTmRequest(session, `/messages/${id}`);
+    return normalizeMailTmMessage(data);
+  }
+
   return gmFetch(`${API_BASE}?action=readMessage&login=${login}&domain=${domain}&id=${id}`);
+}
+
+/** 丢弃当前邮箱会话 */
+async function apiDiscardCurrentSession() {
+  if (!currentSession || currentSession.provider !== PROVIDERS.mailTm || !currentSession.accountId) {
+    return;
+  }
+
+  try {
+    await mailTmRequest(currentSession, `/accounts/${currentSession.accountId}`, {
+      method: 'DELETE',
+    });
+  } catch (error) {
+    // 删除失败不阻塞本地清理，避免用户被卡在“丢弃”动作上
+    console.warn('[TempMail+] 删除 mail.tm 账号失败:', error);
+  }
 }
 
 /* ──────────────────────────────────────────────────────
@@ -192,6 +522,21 @@ function persistEmail(email) { GM_setValue(STORAGE_KEY, email); }
 
 /** 清除已保存的邮箱地址 */
 function eraseEmail()        { GM_setValue(STORAGE_KEY, null); }
+
+/** 读取已保存的会话 */
+function readSavedSession()  { return GM_getValue(SESSION_KEY, null); }
+
+/** 持久化保存会话 */
+function persistSession(session) {
+  persistEmail(session ? session.email : null);
+  GM_setValue(SESSION_KEY, session);
+}
+
+/** 清除已保存的会话 */
+function eraseSession() {
+  eraseEmail();
+  GM_setValue(SESSION_KEY, null);
+}
 
 /* ──────────────────────────────────────────────────────
    Shadow DOM 注入：宿主元素 + 样式 + 面板 HTML
@@ -683,13 +1028,13 @@ function renderMessages(messages) {
   messages.forEach(msg => {
     const item = document.createElement('div');
     item.className = 'tm-mail-item';
-    item.dataset.id = msg.id;
+    item.dataset.id = String(msg.id);
     item.innerHTML = `
       <div class="tm-mail-from">${escHtml(msg.from)}</div>
       <div class="tm-mail-subject">${escHtml(msg.subject || t('no_subject'))}</div>
       <div class="tm-mail-date">${escHtml(msg.date)}</div>
     `;
-    item.addEventListener('click', () => handleMailClick(Number(item.dataset.id)));
+    item.addEventListener('click', () => handleMailClick(item.dataset.id));
     listEl.appendChild(item);
   });
 }
@@ -754,7 +1099,7 @@ async function handleGenerate() {
   btn.textContent = t('loading');
   try {
     const email = await apiGenerateEmail();
-    persistEmail(email);
+    persistSession(currentSession);
     currentEmail = email;
     knownMailIds = new Set();
     showMain(email);
@@ -790,9 +1135,12 @@ async function handleRefresh() {
 async function handleDiscard() {
   if (!confirm(t('confirm_discard'))) return;
   stopPolling();
-  eraseEmail();
-  currentEmail = null;
-  knownMailIds = new Set();
+  // 先删除远端资源（mail.tm 账号），再清理本地存储
+  await apiDiscardCurrentSession();
+  eraseSession();
+  currentEmail  = null;
+  currentSession = null;
+  knownMailIds  = new Set();
   showEmpty();
 }
 
@@ -898,6 +1246,14 @@ $s('tm-btn-back').addEventListener('click',     () => showMain(currentEmail));
 
 (async function init() {
   currentEmail = readSavedEmail();
+  currentSession = readSavedSession();
+
+  if (!currentSession && currentEmail) {
+    currentSession = buildSession(currentEmail, PROVIDERS.oneSecMail);
+  } else if (currentSession && currentSession.email) {
+    currentEmail = currentSession.email;
+  }
+
   if (currentEmail) {
     showMain(currentEmail);
     setMailStatus(t('loading'));
@@ -909,3 +1265,7 @@ $s('tm-btn-back').addEventListener('click',     () => showMain(currentEmail));
 })();
 
 } // end: 防重复注入检查
+
+
+
+
