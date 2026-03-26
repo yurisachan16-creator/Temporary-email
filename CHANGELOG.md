@@ -6,6 +6,23 @@
 
 ## [未发布]
 
+## [1.2.0] - 2026-03-26
+
+### 新增（Tampermonkey 版）
+- **冷门域名池**：新增 `DOMAIN_TIERS` 常量，将 1secmail 域名按信誉分为三级：
+  - 🟢 冷门（xojxe.com、yoggm.com、esiix.com）— Steam/Discord 等平台拦截率最低
+  - 🟡 中等（wwjmp.com、kzccv.com、qiott.com）
+  - 🔴 常见（1secmail.org/net/com）— 已被大多数平台识别
+- `apiGetDomainList`：调用 1secmail `getDomainList` 接口获取当前全部可用域名，结果本地缓存避免重复请求
+- `apiGetBestDomain`：从可用域名中按冷→中→热顺序选取信誉最低的域名
+- `getDomainTierLabel`：返回域名对应的信誉等级标签（🟢/🟡/🔴）
+- `showMain` 更新：在邮箱地址旁展示域名信誉徽章，鼠标悬停显示详细说明
+- 域名信誉徽章样式（`.tm-domain-badge`）
+
+### 变更
+- `apiGenerateEmail` 不再调用 `genRandomMailbox`，改为自行构造邮箱地址（`随机login@最冷门可用域名`），失败时仍回退到 mail.tm
+- 测试用例从 102 条扩展至 114 条，覆盖新增的域名池全路径
+
 ## [1.1.0] - 2026-03-26
 
 ### 修复

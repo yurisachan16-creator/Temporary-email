@@ -47,10 +47,33 @@ const PROVIDERS     = {
   mailTm:     'mailtm',
 };
 
-let currentEmail = null;   // 当前邮箱地址
-let currentSession = null; // 当前邮箱会话（提供商、凭据等）
-let pollTimer    = null;   // setInterval 句柄
-let knownMailIds = new Set();  // 已知邮件 ID，用于检测新邮件
+/**
+ * 域名信誉分级：从冷门到热门依次排列
+ * 越靠前的域名在主流平台（Steam / Discord 等）被识别的概率越低
+ *
+ * 信誉等级定义：
+ *   🟢 cold   — 极冷门，几乎不在黑名单中（如 xojxe.com）
+ *   🟡 medium — 有一定知名度，部分平台会拦截
+ *   🔴 known  — 广为人知，主流平台普遍拦截（如 1secmail.com）
+ */
+const DOMAIN_TIERS = {
+  cold:   { label: '🟢 冷门',   domains: ['xojxe.com', 'yoggm.com', 'esiix.com'] },
+  medium: { label: '🟡 中等',   domains: ['wwjmp.com', 'kzccv.com', 'qiott.com'] },
+  known:  { label: '🔴 常见',   domains: ['1secmail.org', '1secmail.net', '1secmail.com'] },
+};
+
+// 按优先级展开的完整域名列表（冷门排前）
+const COLD_DOMAIN_PRIORITY = [
+  ...DOMAIN_TIERS.cold.domains,
+  ...DOMAIN_TIERS.medium.domains,
+  ...DOMAIN_TIERS.known.domains,
+];
+
+let currentEmail   = null;  // 当前邮箱地址
+let currentSession = null;  // 当前邮箱会话（提供商、凭据等）
+let pollTimer      = null;  // setInterval 句柄
+let knownMailIds   = new Set();  // 已知邮件 ID，用于检测新邮件
+let cachedDomains  = null;  // 1secmail 可用域名缓存（避免重复请求）
 let isDragging   = false;      // 拖拽状态
 let dragStartX   = 0, dragStartY  = 0;  // 拖拽起始鼠标坐标
 let panelStartX  = 0, panelStartY = 0;  // 拖拽起始面板坐标
@@ -454,16 +477,57 @@ function resolveSession(login, domain) {
   return currentSession;
 }
 
-/** 生成随机临时邮箱，返回邮箱地址字符串 */
+/**
+ * 获取 1secmail 当前可用的全部域名（结果缓存，同一会话只请求一次）
+ * @returns {Promise<string[]>}
+ */
+async function apiGetDomainList() {
+  if (cachedDomains) return cachedDomains;
+  cachedDomains = await gmFetch(`${API_BASE}?action=getDomainList`);
+  return cachedDomains;
+}
+
+/**
+ * 从可用域名中选取信誉最冷门的域名
+ * 优先级：冷门（xojxe.com）> 中等（wwjmp.com）> 热门（1secmail.com）
+ * @returns {Promise<string>}
+ */
+async function apiGetBestDomain() {
+  const available = await apiGetDomainList();
+  for (const domain of COLD_DOMAIN_PRIORITY) {
+    if (available.includes(domain)) return domain;
+  }
+  // 偏好列表全未命中时，取列表末位（1secmail 习惯将较新域名放后面）
+  return available[available.length - 1] ?? '1secmail.com';
+}
+
+/**
+ * 根据域名返回对应的信誉等级标签
+ * @param {string} domain
+ * @returns {string} 例如 '🟢 冷门'
+ */
+function getDomainTierLabel(domain) {
+  for (const tier of Object.values(DOMAIN_TIERS)) {
+    if (tier.domains.includes(domain)) return tier.label;
+  }
+  return '🟡 中等'; // 未知域名默认视为中等
+}
+
+/**
+ * 生成临时邮箱：
+ *   1. 优先使用 1secmail 冷门域名（不调用 genRandomMailbox，自行构造地址）
+ *   2. 1secmail 不可用时自动回退到 mail.tm
+ * @returns {Promise<string>} 邮箱地址
+ */
 async function apiGenerateEmail() {
   try {
-    const data = await gmFetch(`${API_BASE}?action=genRandomMailbox&count=1`);
-    currentSession = buildSession(data[0], PROVIDERS.oneSecMail);
+    const domain = await apiGetBestDomain();
+    // 自行生成 12 位随机 login，不依赖 genRandomMailbox
+    // 这样可以完全控制使用哪个域名
+    const login = Math.random().toString(36).slice(2, 14);
+    currentSession = buildSession(`${login}@${domain}`, PROVIDERS.oneSecMail);
   } catch (error) {
-    if (!shouldFallbackToMailTm(error)) {
-      throw error;
-    }
-
+    if (!shouldFallbackToMailTm(error)) throw error;
     currentSession = await createMailTmSession();
   }
 
@@ -715,6 +779,18 @@ styleEl.textContent = `
     white-space: nowrap;
   }
 
+  /* 域名信誉徽章：显示冷门 / 中等 / 常见 */
+  .tm-domain-badge {
+    font-size: 10px;
+    color: #6B7280;
+    background: #F3F4F6;
+    border-radius: 4px;
+    padding: 2px 6px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    cursor: help;
+  }
+
   /* ── 操作按钮行 ── */
   .tm-actions {
     display: flex;
@@ -892,6 +968,7 @@ viewMain.style.display = 'none';
 viewMain.innerHTML = `
   <div class="tm-email-bar">
     <span id="tm-email-addr" class="tm-email-addr"></span>
+    <span id="tm-domain-badge" class="tm-domain-badge" title="域名信誉等级"></span>
     <button id="tm-btn-copy" class="tm-btn tm-btn-outline tm-btn-sm">${t('copy')}</button>
   </div>
   <div class="tm-actions">
@@ -978,6 +1055,15 @@ function showMain(email) {
   const el = $s('tm-email-addr');
   el.textContent = email;
   el.title       = email;
+
+  // 更新域名信誉徽章
+  const domain = email.split('@')[1] || '';
+  const badge  = $s('tm-domain-badge');
+  if (badge) {
+    const label = getDomainTierLabel(domain);
+    badge.textContent = label;
+    badge.title       = `域名信誉等级：${label}`;
+  }
 }
 
 function showDetail(msg) {

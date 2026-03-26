@@ -27,7 +27,19 @@ const PROVIDERS   = {
   mailTm:     'mailtm',
 };
 
+const DOMAIN_TIERS = {
+  cold:   { label: '🟢 冷门', domains: ['xojxe.com', 'yoggm.com', 'esiix.com'] },
+  medium: { label: '🟡 中等', domains: ['wwjmp.com', 'kzccv.com', 'qiott.com'] },
+  known:  { label: '🔴 常见', domains: ['1secmail.org', '1secmail.net', '1secmail.com'] },
+};
+const COLD_DOMAIN_PRIORITY = [
+  ...DOMAIN_TIERS.cold.domains,
+  ...DOMAIN_TIERS.medium.domains,
+  ...DOMAIN_TIERS.known.domains,
+];
+
 let currentSession = null;
+let cachedDomains  = null;
 let loginSeed = 0;
 
 function createHttpError(status, responseText) {
@@ -273,10 +285,34 @@ function resolveSession(login, domain) {
   return currentSession;
 }
 
+async function apiGetDomainList() {
+  if (cachedDomains) return cachedDomains;
+  cachedDomains = await gmFetch(`${API_BASE}?action=getDomainList`);
+  return cachedDomains;
+}
+
+async function apiGetBestDomain() {
+  const available = await apiGetDomainList();
+  for (const domain of COLD_DOMAIN_PRIORITY) {
+    if (available.includes(domain)) return domain;
+  }
+  // 偏好列表全未命中时，取列表末位（1secmail 习惯将较新域名放后面）
+  return available[available.length - 1] ?? '1secmail.com';
+}
+
+function getDomainTierLabel(domain) {
+  for (const tier of Object.values(DOMAIN_TIERS)) {
+    if (tier.domains.includes(domain)) return tier.label;
+  }
+  return '🟡 中等'; // 未知域名默认视为中等
+}
+
 async function apiGenerateEmail() {
   try {
-    const data = await gmFetch(`${API_BASE}?action=genRandomMailbox&count=1`);
-    currentSession = buildSession(data[0], PROVIDERS.oneSecMail);
+    const domain = await apiGetBestDomain();
+    // 自行生成随机 login，不依赖 genRandomMailbox，以便完全控制域名
+    const login = Math.random().toString(36).slice(2, 14);
+    currentSession = buildSession(`${login}@${domain}`, PROVIDERS.oneSecMail);
   } catch (error) {
     if (!shouldFallbackToMailTm(error)) {
       throw error;
@@ -419,16 +455,29 @@ describe('apiGenerateEmail', () => {
   beforeEach(() => {
     GM_xmlhttpRequest.mockClear();
     currentSession = null;
+    cachedDomains  = null;
     loginSeed = 0;
   });
 
-  test('1secmail 可用时直接返回其邮箱地址', async () => {
-    mockOnload(200, JSON.stringify(['first@1secmail.com']));
-    await expect(apiGenerateEmail()).resolves.toBe('first@1secmail.com');
+  test('getDomainList 可用时使用冷门域名构造邮箱', async () => {
+    // getDomainList 返回包含冷门域名的列表
+    mockOnload(200, JSON.stringify(['xojxe.com', '1secmail.com']));
+
+    const email = await apiGenerateEmail();
+    expect(email).toMatch(/@xojxe\.com$/);
     expect(currentSession.provider).toBe(PROVIDERS.oneSecMail);
   });
 
-  test('1secmail 返回 403 时自动回退到 mail.tm', async () => {
+  test('getDomainList 返回列表中无预设域名时使用列表末位域名', async () => {
+    // 全部是 COLD_DOMAIN_PRIORITY 未收录的域名
+    mockOnload(200, JSON.stringify(['unknowna.com', 'unknownb.com']));
+
+    const email = await apiGenerateEmail();
+    // 末位是 unknownb.com
+    expect(email).toMatch(/@unknownb\.com$/);
+  });
+
+  test('getDomainList 返回 403 时自动回退到 mail.tm', async () => {
     mockOnload(403, 'Forbidden');
     mockOnload(200, JSON.stringify({
       'hydra:member': [{ domain: 'mail.tm', isActive: true, isPrivate: false }],
@@ -617,6 +666,86 @@ describe('storage', () => {
     eraseSession();
     expect(GM_setValue).toHaveBeenNthCalledWith(1, STORAGE_KEY, null);
     expect(GM_setValue).toHaveBeenNthCalledWith(2, SESSION_KEY, null);
+  });
+});
+
+describe('apiGetDomainList', () => {
+  beforeEach(() => {
+    GM_xmlhttpRequest.mockClear();
+    cachedDomains = null;
+  });
+
+  test('首次调用时请求 getDomainList 接口并返回域名数组', async () => {
+    mockOnload(200, JSON.stringify(['xojxe.com', '1secmail.com']));
+    const result = await apiGetDomainList();
+    expect(result).toEqual(['xojxe.com', '1secmail.com']);
+    expect(GM_xmlhttpRequest).toHaveBeenCalledTimes(1);
+  });
+
+  test('第二次调用时直接返回缓存，不再发起网络请求', async () => {
+    mockOnload(200, JSON.stringify(['xojxe.com', '1secmail.com']));
+    await apiGetDomainList();
+    const second = await apiGetDomainList();
+    expect(second).toEqual(['xojxe.com', '1secmail.com']);
+    // 只发起了一次请求
+    expect(GM_xmlhttpRequest).toHaveBeenCalledTimes(1);
+  });
+
+  test('接口请求失败时向上抛出错误', async () => {
+    mockOnerror();
+    await expect(apiGetDomainList()).rejects.toThrow('连接失败');
+  });
+});
+
+describe('apiGetBestDomain', () => {
+  beforeEach(() => {
+    GM_xmlhttpRequest.mockClear();
+    cachedDomains = null;
+  });
+
+  test('可用列表中存在冷门域名时优先返回冷门域名', async () => {
+    mockOnload(200, JSON.stringify(['1secmail.com', 'xojxe.com', 'yoggm.com']));
+    await expect(apiGetBestDomain()).resolves.toBe('xojxe.com');
+  });
+
+  test('冷门域名不可用时回退到中等域名', async () => {
+    mockOnload(200, JSON.stringify(['1secmail.com', 'wwjmp.com']));
+    await expect(apiGetBestDomain()).resolves.toBe('wwjmp.com');
+  });
+
+  test('所有预设域名都不在列表中时取数组末位', async () => {
+    mockOnload(200, JSON.stringify(['unknowndomain1.com', 'unknowndomain2.com']));
+    await expect(apiGetBestDomain()).resolves.toBe('unknowndomain2.com');
+  });
+
+  test('可用列表为空时返回默认域名 1secmail.com', async () => {
+    mockOnload(200, JSON.stringify([]));
+    await expect(apiGetBestDomain()).resolves.toBe('1secmail.com');
+  });
+});
+
+describe('getDomainTierLabel', () => {
+  test('冷门域名返回冷门标签', () => {
+    expect(getDomainTierLabel('xojxe.com')).toBe('🟢 冷门');
+    expect(getDomainTierLabel('yoggm.com')).toBe('🟢 冷门');
+    expect(getDomainTierLabel('esiix.com')).toBe('🟢 冷门');
+  });
+
+  test('中等域名返回中等标签', () => {
+    expect(getDomainTierLabel('wwjmp.com')).toBe('🟡 中等');
+    expect(getDomainTierLabel('kzccv.com')).toBe('🟡 中等');
+    expect(getDomainTierLabel('qiott.com')).toBe('🟡 中等');
+  });
+
+  test('常见域名返回常见标签', () => {
+    expect(getDomainTierLabel('1secmail.com')).toBe('🔴 常见');
+    expect(getDomainTierLabel('1secmail.org')).toBe('🔴 常见');
+    expect(getDomainTierLabel('1secmail.net')).toBe('🔴 常见');
+  });
+
+  test('未知域名默认返回中等标签', () => {
+    expect(getDomainTierLabel('unknowndomain.com')).toBe('🟡 中等');
+    expect(getDomainTierLabel('')).toBe('🟡 中等');
   });
 });
 
