@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TempMail+
 // @namespace    https://github.com/yurisachan16-creator/Temporary-email
-// @version      1.0.0
+// @version      1.1.0
 // @description  一键生成临时邮箱，自动填入表单，查收邮件，用完即弃。支持中文/英文。
 // @author       yurisachan16-creator
 // @match        *://*/*
@@ -1135,9 +1135,12 @@ async function handleRefresh() {
 async function handleDiscard() {
   if (!confirm(t('confirm_discard'))) return;
   stopPolling();
-  eraseEmail();
-  currentEmail = null;
-  knownMailIds = new Set();
+  // 先删除远端资源（mail.tm 账号），再清理本地存储
+  await apiDiscardCurrentSession();
+  eraseSession();
+  currentEmail  = null;
+  currentSession = null;
+  knownMailIds  = new Set();
   showEmpty();
 }
 
