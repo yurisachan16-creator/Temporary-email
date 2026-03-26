@@ -1,0 +1,22 @@
+{
+  "generate":        "Generate Temporary Email",
+  "copy":            "Copy",
+  "copied":          "Copied!",
+  "refresh":         "Refresh",
+  "no_mail":         "No emails yet, waiting...",
+  "auto_fill":       "Auto Fill Page",
+  "discard":         "Discard This Email",
+  "settings":        "Settings",
+  "back":            "Back",
+  "loading":         "Loading...",
+  "mail_from":       "From",
+  "mail_subject":    "Subject",
+  "mail_date":       "Date",
+  "confirm_fill":    "Fill this address into the page input?",
+  "confirm_discard": "Discard this email? This cannot be undone.",
+  "error_network":   "Network error, please check your connection",
+  "error_rate_limit":"Too many requests, please try again later",
+  "error_no_input":  "No email input field found on this page",
+  "lang_zh":         "中文",
+  "lang_en":         "English"
+}

@@ -1,0 +1,9 @@
+# Node 依赖目录（不纳入版本管理）
+node_modules/
+
+# Jest 覆盖率报告
+coverage/
+
+# 系统文件
+.DS_Store
+Thumbs.db
