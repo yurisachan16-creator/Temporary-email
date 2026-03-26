@@ -126,14 +126,15 @@ function gmFetch(url) {
       method:  'GET',
       url,
       timeout: 15_000,
-      // 显式覆盖 Referer / Origin，避免带上当前页面域名（如 bilibili.com）
-      // 部分网站会因收到非预期的 Referer 而返回 403
       headers: {
+        // 使用真实浏览器 UA，避免被识别为脚本请求
+        'User-Agent': navigator.userAgent,
+        'Accept':     'application/json, text/plain, */*',
+        // 只设置 Referer，不设置 Origin（Origin 仅用于 POST/PUT 跨域，GET 请求
+        // 设置 Origin 会触发服务器 CORS 验证逻辑，可能导致 403）
         'Referer': 'https://www.1secmail.com/',
-        'Origin':  'https://www.1secmail.com/',
-        'Accept':  'application/json, */*',
       },
-      // 不携带当前页面的 Cookie，防止凭证污染请求
+      // 不携带当前页面（如 bilibili）的 Cookie
       anonymous: true,
       onload(res) {
         if (res.status >= 200 && res.status < 300) {
@@ -143,11 +144,15 @@ function gmFetch(url) {
             reject(new Error('JSON 解析失败'));
           }
         } else {
-          reject(new Error(`${t('error_network')}（${res.status}）`));
+          // 将响应体前 120 字符附加到错误信息，方便排查
+          const hint = res.responseText
+            ? `：${res.responseText.slice(0, 120)}`
+            : '';
+          reject(new Error(`${t('error_network')}（${res.status}${hint}）`));
         }
       },
-      onerror()   { reject(new Error(t('error_network'))); },
-      ontimeout() { reject(new Error(t('error_network'))); },
+      onerror()   { reject(new Error(`${t('error_network')}（连接失败）`)); },
+      ontimeout() { reject(new Error(`${t('error_network')}（超时）`)); },
     });
   });
 }
