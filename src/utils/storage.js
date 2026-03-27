@@ -10,12 +10,17 @@ const KEY_EMAIL_LIST     = 'emailList';       // 多邮箱字符串数组（v1.x
 const KEY_MAILBOXES      = 'mailboxes';       // 多邮箱对象数组（v2.0）
 const KEY_ACTIVE_MAILBOX = 'activeMailboxId'; // 当前激活邮箱 ID（v2.0）
 const KEY_THEME          = 'theme';           // 主题偏好（v2.0）
+const KEY_LANGUAGE       = 'language';        // 语言偏好（v2.0）
+const KEY_PROVIDER_STORE = 'providerSession'; // 提供商会话映射（v2.0）
 
 // PRD 限制：最多同时保存 5 个邮箱
 const MAX_EMAIL_COUNT = 5;
 
 // 有效主题值
 const VALID_THEMES = ['auto', 'light', 'dark'];
+
+// 有效语言值
+const VALID_LANGUAGES = ['auto', 'zh', 'en'];
 
 /**
  * 验证邮箱格式是否合法
@@ -180,4 +185,90 @@ export async function setTheme(theme) {
     throw new Error(`无效的主题值：${theme}，支持 ${VALID_THEMES.join(' / ')}`);
   }
   await browser.storage.local.set({ [KEY_THEME]: theme });
+}
+
+// ── v2.0 语言函数 ────────────────────────────────────
+
+/**
+ * 读取语言偏好设置（v2.0）
+ * @returns {Promise<string>} 'auto' | 'zh' | 'en'，默认 'auto'
+ */
+export async function getLanguage() {
+  const result = await browser.storage.local.get(KEY_LANGUAGE);
+  return result[KEY_LANGUAGE] ?? 'auto';
+}
+
+/**
+ * 保存语言偏好设置（v2.0）
+ * @param {'auto'|'zh'|'en'} language
+ * @returns {Promise<void>}
+ */
+export async function setLanguage(language) {
+  if (!VALID_LANGUAGES.includes(language)) {
+    throw new Error(`无效的语言值：${language}，支持 ${VALID_LANGUAGES.join(' / ')}`);
+  }
+  await browser.storage.local.set({ [KEY_LANGUAGE]: language });
+}
+
+// ── v2.0 提供商会话函数 ──────────────────────────────
+
+/**
+ * 读取所有提供商会话映射
+ * @returns {Promise<Record<string, object>>}
+ */
+export async function getAllProviderSessions() {
+  const result = await browser.storage.local.get(KEY_PROVIDER_STORE);
+  return result[KEY_PROVIDER_STORE] ?? {};
+}
+
+/**
+ * 读取指定邮箱的提供商会话
+ * @param {string} email
+ * @returns {Promise<object|null>}
+ */
+export async function getProviderSession(email) {
+  if (!email) return null;
+  const sessions = await getAllProviderSessions();
+  return sessions[email] ?? null;
+}
+
+/**
+ * 保存指定邮箱的提供商会话
+ * @param {string} email
+ * @param {object} session
+ * @returns {Promise<void>}
+ */
+export async function setProviderSession(email, session) {
+  if (!isValidEmail(email)) {
+    throw new Error('邮箱格式无效');
+  }
+  if (!session || typeof session !== 'object') {
+    throw new Error('提供商会话无效');
+  }
+
+  const sessions = await getAllProviderSessions();
+  await browser.storage.local.set({
+    [KEY_PROVIDER_STORE]: {
+      ...sessions,
+      [email]: session,
+    },
+  });
+}
+
+/**
+ * 清除指定邮箱的提供商会话；未传邮箱时清空全部会话
+ * @param {string} [email]
+ * @returns {Promise<void>}
+ */
+export async function clearProviderSession(email) {
+  if (!email) {
+    await browser.storage.local.remove(KEY_PROVIDER_STORE);
+    return;
+  }
+
+  const sessions = await getAllProviderSessions();
+  if (!(email in sessions)) return;
+
+  delete sessions[email];
+  await browser.storage.local.set({ [KEY_PROVIDER_STORE]: sessions });
 }

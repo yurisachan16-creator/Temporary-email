@@ -22,6 +22,7 @@ const API_BASE    = 'https://www.1secmail.com/api/v1/';
 const MAILTM_BASE = 'https://api.mail.tm';
 const STORAGE_KEY = 'tm_currentEmail';
 const SESSION_KEY = 'tm_providerSession';
+const LANGUAGE_KEY = 'tm_language';
 const PROVIDERS   = {
   oneSecMail: '1secmail',
   mailTm:     'mailtm',
@@ -41,6 +42,44 @@ const COLD_DOMAIN_PRIORITY = [
 let currentSession = null;
 let cachedDomains  = null;
 let loginSeed = 0;
+let currentLanguagePreference = 'auto';
+let currentLang = 'zh';
+
+const LANGUAGE_TRANSLATIONS = {
+  zh: {
+    language_label: '语言',
+    language_auto: '跟随浏览器',
+    language_zh: '中文',
+    language_en: 'English',
+  },
+  en: {
+    language_label: 'Language',
+    language_auto: 'Follow Browser',
+    language_zh: '中文',
+    language_en: 'English',
+  },
+};
+
+function resolveLanguage(preference) {
+  if (preference === 'zh' || preference === 'en') return preference;
+  return (navigator.language || 'zh').toLowerCase().startsWith('en') ? 'en' : 'zh';
+}
+
+function t(key) {
+  return (LANGUAGE_TRANSLATIONS[currentLang] || LANGUAGE_TRANSLATIONS.en)[key] || key;
+}
+
+function getLanguagePreferenceLabel() {
+  if (currentLanguagePreference === 'zh') return t('language_zh');
+  if (currentLanguagePreference === 'en') return t('language_en');
+  return t('language_auto');
+}
+
+function persistLanguage(preference) {
+  currentLanguagePreference = preference;
+  currentLang = resolveLanguage(preference);
+  GM_setValue(LANGUAGE_KEY, preference);
+}
 
 function createHttpError(status, responseText) {
   const hint = responseText
@@ -666,6 +705,38 @@ describe('storage', () => {
     eraseSession();
     expect(GM_setValue).toHaveBeenNthCalledWith(1, STORAGE_KEY, null);
     expect(GM_setValue).toHaveBeenNthCalledWith(2, SESSION_KEY, null);
+  });
+});
+
+describe('language preference', () => {
+  beforeEach(() => {
+    GM_setValue.mockReset();
+    currentLanguagePreference = 'auto';
+    currentLang = 'zh';
+  });
+
+  test('auto 模式下英文浏览器返回 en', () => {
+    global.navigator = { userAgent: 'TestAgent/1.0', language: 'en-US' };
+    expect(resolveLanguage('auto')).toBe('en');
+  });
+
+  test('persistLanguage 会保存偏好并更新当前语言', () => {
+    global.navigator = { userAgent: 'TestAgent/1.0', language: 'zh-CN' };
+
+    persistLanguage('en');
+
+    expect(currentLang).toBe('en');
+    expect(GM_setValue).toHaveBeenCalledWith(LANGUAGE_KEY, 'en');
+  });
+
+  test('getLanguagePreferenceLabel 会返回当前偏好的已翻译文案', () => {
+    currentLanguagePreference = 'auto';
+    currentLang = 'zh';
+    expect(getLanguagePreferenceLabel()).toBe('跟随浏览器');
+
+    currentLanguagePreference = 'en';
+    currentLang = 'en';
+    expect(getLanguagePreferenceLabel()).toBe('English');
   });
 });
 

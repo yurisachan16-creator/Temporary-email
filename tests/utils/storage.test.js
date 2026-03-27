@@ -22,6 +22,12 @@ import {
   setActiveMailboxId,
   getTheme,
   setTheme,
+  getLanguage,
+  setLanguage,
+  getAllProviderSessions,
+  getProviderSession,
+  setProviderSession,
+  clearProviderSession,
 } from '../../src/utils/storage';
 
 // 每次测试前清空 storage，保证测试之间互相隔离
@@ -338,5 +344,72 @@ describe('getTheme / setTheme（主题偏好）', () => {
 
     // 原值应保持不变
     expect(await getTheme()).toBe('light');
+  });
+});
+
+// ─── getLanguage / setLanguage（语言偏好）────────────
+describe('getLanguage / setLanguage（语言偏好）', () => {
+  test('未设置时默认返回 "auto"', async () => {
+    expect(await getLanguage()).toBe('auto');
+  });
+
+  test('设置 "zh" 后应能正确读回', async () => {
+    await setLanguage('zh');
+
+    expect(await getLanguage()).toBe('zh');
+  });
+
+  test('设置 "en" 后应能正确读回', async () => {
+    await setLanguage('en');
+
+    expect(await getLanguage()).toBe('en');
+  });
+
+  test('设置无效值时应抛出错误', async () => {
+    await expect(setLanguage('jp')).rejects.toThrow();
+  });
+});
+
+// ─── providerSession（提供商会话映射）────────────────
+describe('providerSession（提供商会话映射）', () => {
+  test('未设置时 getAllProviderSessions 应返回空对象', async () => {
+    expect(await getAllProviderSessions()).toEqual({});
+  });
+
+  test('setProviderSession 后可通过 getProviderSession 读回指定邮箱会话', async () => {
+    const session = { provider: 'mailtm', token: 'token_1', email: 'user@mail.tm' };
+
+    await setProviderSession('user@mail.tm', session);
+
+    expect(await getProviderSession('user@mail.tm')).toEqual(session);
+  });
+
+  test('多个邮箱会话应共存于同一映射中', async () => {
+    await setProviderSession('a@mail.tm', { provider: 'mailtm', token: 'token_a' });
+    await setProviderSession('b@mail.tm', { provider: 'mailtm', token: 'token_b' });
+
+    expect(await getAllProviderSessions()).toEqual({
+      'a@mail.tm': { provider: 'mailtm', token: 'token_a' },
+      'b@mail.tm': { provider: 'mailtm', token: 'token_b' },
+    });
+  });
+
+  test('clearProviderSession(email) 仅删除指定邮箱会话', async () => {
+    await setProviderSession('a@mail.tm', { provider: 'mailtm', token: 'token_a' });
+    await setProviderSession('b@mail.tm', { provider: 'mailtm', token: 'token_b' });
+
+    await clearProviderSession('a@mail.tm');
+
+    expect(await getAllProviderSessions()).toEqual({
+      'b@mail.tm': { provider: 'mailtm', token: 'token_b' },
+    });
+  });
+
+  test('clearProviderSession() 不传参数时清空全部会话', async () => {
+    await setProviderSession('a@mail.tm', { provider: 'mailtm', token: 'token_a' });
+
+    await clearProviderSession();
+
+    expect(await getAllProviderSessions()).toEqual({});
   });
 });

@@ -8,74 +8,35 @@
 
 **仓库**：`git@github.com:yurisachan16-creator/Temporary-email.git`
 **本地路径**：`D:\社团练习\网页插件`
-**当前版本**：v1.0.0（已打 tag）
-**测试状态**：107 / 107 通过（`npm test`）
+**当前版本**：v2.0.2
+**测试状态**：157 / 157 通过（`npm test`）
 
 TempMail+ 是一个临时邮箱工具，有两种交付形态：
 
 | 形态 | 入口 | 状态 |
 |------|------|------|
-| 浏览器扩展（Chrome/Edge MV3 + Firefox MV2）| `src/` | ✅ 功能完整 |
-| Tampermonkey 用户脚本 | `tampermonkey/TempMail+.user.js` | ❌ **存在未修复 Bug** |
+| 浏览器扩展（Chrome/Edge MV3 + Firefox MV2）| `src/` | ✅ 已补齐双提供商、冷门域名、语言切换 |
+| Tampermonkey 用户脚本 | `tampermonkey/TempMail+.user.js` | ✅ 已支持双提供商、冷门域名、语言切换 |
 
 ---
 
-## 二、未解决的 Bug（你的主要任务）
+## 二、当前实现状态
 
-### 现象
+### 浏览器扩展
+- 使用共享 `src/api/mailService.js`，优先 1secmail 冷门域名，异常时自动回退 mail.tm
+- 使用共享 `src/utils/storage.js` 管理多邮箱、主题、语言、provider 会话
+- 设置页已支持 `auto / zh / en` 语言切换与主题切换
+- 删除 mail.tm 邮箱时会同步删除远端账号并清理本地会话
 
-在任意网页（已复现：B 站）安装 Tampermonkey 脚本后，点击「生成临时邮箱」按钮，弹出错误：
+### Tampermonkey
+- 保留原有双提供商、冷门域名、拖拽面板逻辑
+- 新增标题栏语言切换按钮，支持 `auto / zh / en` 循环切换
+- 语言偏好持久化存储在 `tm_language`
 
-```
-⚠ 网络异常，请检查连接（403：<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
-<html><head> <title>403 Forbidden</title> </head><body> <h1>Forbidden</h1>...
-```
-
-### 已尝试的修复（均失败）
-
-| 尝试 | 修改内容 | 结果 |
-|------|----------|------|
-| 第 1 次 | 设置 `Referer: https://www.1secmail.com/` | 仍 403 |
-| 第 2 次 | 移除 `Origin` 头，加 `anonymous: true` | 仍 403 |
-| 第 3 次 | 完全移除 `Referer` 头 | 仍 403 |
-
-### 关键线索
-
-- 能收到 HTTP 403 响应（不是超时），说明请求**已到达**目标服务器
-- 响应体是标准 Apache/Nginx 403 HTML，是**应用层拦截**，非网络层封锁
-- 同样的 URL 在浏览器地址栏直接打开可正常返回 JSON
-- 当前 `gmFetch` 的请求头：只有 `User-Agent` 和 `Accept`，无 `Referer`、无 `Origin`、`anonymous: true`
-
-### 需要你排查的方向
-
-1. **`GM_xmlhttpRequest` 与浏览器直接请求的差异**：抓包对比两者实际发出的 HTTP 头，找到触发 403 的具体字段
-2. **1secmail API 的访问限制**：确认该 API 是否对某类 User-Agent、IP 或请求特征有限制
-3. **备用方案**：若 1secmail 在特定网络环境下不可用，考虑替换或新增备用 API（如 `mail.tm`、`guerrillamail` 等），实现自动 fallback
-4. **`@connect` 指令**：确认 `@connect www.1secmail.com` 是否足够，或需要改为 `@connect *`
-
-### 相关代码位置
-
-`tampermonkey/TempMail+.user.js` 第 123～155 行，`gmFetch` 函数：
-
-```js
-function gmFetch(url) {
-  return new Promise((resolve, reject) => {
-    GM_xmlhttpRequest({
-      method:  'GET',
-      url,
-      timeout: 15_000,
-      headers: {
-        'User-Agent': navigator.userAgent,
-        'Accept':     'application/json, text/plain, */*',
-      },
-      anonymous: true,
-      onload(res) { ... },
-      onerror()   { ... },
-      ontimeout() { ... },
-    });
-  });
-}
-```
+### 当前建议关注点
+1. 浏览器扩展暂无桌面通知与有效期倒计时，仍处于 v2.0 范围
+2. popup 侧已有共享服务，但 Tampermonkey 仍保留内嵌 API 逻辑，后续若继续演进可考虑进一步抽公共层
+3. 文档已同步到 v2.0.2，后续改动需同时更新 README / PRD / CHANGELOG
 
 ---
 
@@ -228,8 +189,8 @@ npm test         # 应输出：107 passed
 ## 七、当前版本状态
 
 ```
-v1.0.0（main 分支，已 tag）
-  ✅ 浏览器扩展：全功能可用
-  ✅ 107 个单元测试全部通过
-  ❌ Tampermonkey 脚本：gmFetch 对 1secmail API 返回 403，原因未定
+v2.0.2（feat/browser-parity-sync）
+  ✅ 浏览器扩展：已补齐双提供商、冷门域名、语言切换
+  ✅ Tampermonkey 脚本：已支持语言切换且保持双提供商逻辑
+  ✅ 157 个单元测试全部通过
 ```

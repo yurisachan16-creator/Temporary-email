@@ -6,6 +6,24 @@
 
 ## [未发布]
 
+## [2.0.2] - 2026-03-28
+
+### 新增
+- **浏览器扩展双提供商回退**：扩展版邮件服务升级为共享 `mailService`，优先使用 1secmail 冷门域名，遇到 403 / 429 / 5xx / 网络失败时自动回退到 mail.tm
+- **手动语言切换**：浏览器扩展与 Tampermonkey 版均新增 `auto / zh / en` 语言切换，并持久化保存用户偏好
+- **域名信誉徽章**：浏览器扩展主视图补充冷门 / 中等 / 常见徽章，与 Tampermonkey 版行为对齐
+- **popup i18n 辅助测试**：新增弹窗语言解析与 DOM 翻译测试
+
+### 变更
+- `popup.js` 改为复用共享 `mailService` 与 `storage`，统一 provider、session、语言状态管理
+- `storage.js` 新增语言偏好与 provider 会话映射能力
+- manifest 新增 `https://api.mail.tm/*` 权限，支持浏览器扩展访问备用服务
+- 测试总数更新为 **157** 条并全部通过
+
+### 修复
+- **浏览器扩展 403 可见报错**：不再依赖 `genRandomMailbox`，改为 `getDomainList + 本地构造地址`，规避“加载解压缩扩展”场景下的 403 问题
+- **mail.tm 远端清理**：删除 mail.tm 邮箱时同步删除远端账号并清理本地 provider 会话
+
 ## [2.0.1] - 2026-03-27
 
 ### 修复

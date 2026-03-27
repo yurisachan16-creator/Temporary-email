@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "TempMail+",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "快速生成临时邮箱，保护您的真实邮件地址",
 
   "browser_action": {
@@ -33,7 +33,8 @@
     "storage",
     "clipboardWrite",
     "tabs",
-    "https://www.1secmail.com/*"
+    "https://www.1secmail.com/*",
+    "https://api.mail.tm/*"
   ],
 
   "icons": {

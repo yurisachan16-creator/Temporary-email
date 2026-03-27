@@ -291,6 +291,17 @@ body {
   white-space: nowrap;
 }
 
+.domain-badge {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 /* 操作按钮行 */
 .actions {
   display: flex;
@@ -444,9 +455,11 @@ body {
 .theme-options {
   display: flex;
   gap: 4px;
+  flex-wrap: wrap;
 }
 
-.theme-btn {
+.theme-btn,
+.language-btn {
   padding: 4px 10px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
@@ -456,13 +469,24 @@ body {
   cursor: pointer;
   transition: all var(--transition);
 }
-.theme-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.theme-btn:hover,
+.language-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
 
 /* 当前激活的主题按钮 */
-.theme-btn.active {
+.theme-btn.active,
+.language-btn.active {
   background: var(--color-primary);
   border-color: var(--color-primary);
   color: #fff;
+}
+
+.language-options {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
 }
 
 /* ── 错误横幅 ── */
