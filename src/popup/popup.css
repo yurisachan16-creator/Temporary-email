@@ -1,8 +1,10 @@
 /* ────────────────────────────────────────────────────────
-   TempMail+ 弹窗样式
+   TempMail+ 弹窗样式（v2.0）
    颜色令牌来自 PRD 设计规范（8.3 颜色方案）
+   深色模式：在 <html data-theme="dark"> 时生效
 ──────────────────────────────────────────────────────── */
 
+/* ── 浅色主题变量（默认）── */
 :root {
   --color-primary:          #4F46E5;
   --color-primary-hover:    #4338CA;
@@ -16,8 +18,26 @@
   --color-error:            #EF4444;
   --color-error-bg:         #FEF2F2;
   --color-error-border:     #FECACA;
+  --color-tab-active-bg:    #EEF2FF;
   --radius:                 6px;
   --transition:             0.15s ease;
+}
+
+/* ── 深色主题变量（F-13）── */
+[data-theme="dark"] {
+  --color-primary:          #6366F1;
+  --color-primary-hover:    #4F46E5;
+  --color-bg:               #111827;
+  --color-surface:          #1F2937;
+  --color-text:             #F9FAFB;
+  --color-text-secondary:   #9CA3AF;
+  --color-border:           #374151;
+  --color-success:          #34D399;
+  --color-warning:          #FBBF24;
+  --color-error:            #F87171;
+  --color-error-bg:         #1F2937;
+  --color-error-border:     #374151;
+  --color-tab-active-bg:    #312E81;
 }
 
 /* ── 全局重置 ── */
@@ -46,14 +66,27 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 16px;
+  padding: 10px 16px;
   background: var(--color-primary);
   color: #fff;
   user-select: none;
 }
 
 .header-icon  { font-size: 18px; }
-.header-title { font-size: 15px; font-weight: 600; }
+.header-title { font-size: 15px; font-weight: 600; flex: 1; }
+
+.header-settings-btn {
+  background: transparent;
+  border: none;
+  color: rgba(255,255,255,0.8);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius);
+  line-height: 1;
+  transition: color var(--transition);
+}
+.header-settings-btn:hover { color: #fff; }
 
 /* ── 按钮基础样式 ── */
 .btn {
@@ -67,6 +100,7 @@ body {
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
+  background: transparent;
   transition: opacity var(--transition), background var(--transition);
 }
 .btn:hover    { opacity: 0.85; }
@@ -81,14 +115,12 @@ body {
 .btn-primary:hover { background: var(--color-primary-hover); opacity: 1; }
 
 .btn-outline {
-  background: transparent;
   color: var(--color-text);
   border-color: var(--color-border);
 }
 .btn-outline:hover { background: var(--color-surface); opacity: 1; }
 
 .btn-danger-outline {
-  background: transparent;
   color: var(--color-error);
   border-color: var(--color-error);
   font-size: 12px;
@@ -116,6 +148,128 @@ body {
 }
 
 /* ── ② 主视图 ── */
+
+/* 邮箱选项卡行（F-10）*/
+.mailbox-tabs-wrap {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+  min-height: 36px;
+  overflow: hidden;
+}
+
+.mailbox-tabs {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none; /* Firefox */
+}
+.mailbox-tabs::-webkit-scrollbar { display: none; } /* Chrome */
+
+/* 单个选项卡 */
+.mailbox-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  height: 36px;
+  min-width: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+  border-right: 1px solid var(--color-border);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  transition: background var(--transition), color var(--transition);
+  user-select: none;
+}
+.mailbox-tab:hover { background: var(--color-bg); color: var(--color-text); }
+
+/* 激活状态的选项卡 */
+.mailbox-tab.active {
+  background: var(--color-tab-active-bg);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.tab-name {
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 选项卡关闭按钮 */
+.tab-close {
+  background: none;
+  border: none;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 3px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: color var(--transition), background var(--transition);
+}
+.tab-close:hover {
+  color: var(--color-error);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* 「＋」新建邮箱按钮 */
+.tab-add-btn {
+  background: none;
+  border: none;
+  border-left: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 10px;
+  height: 36px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color var(--transition), background var(--transition);
+}
+.tab-add-btn:hover:not(:disabled) {
+  color: var(--color-primary);
+  background: var(--color-bg);
+}
+.tab-add-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* 新建邮箱内联表单 */
+.new-mailbox-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.mailbox-label-input {
+  flex: 1;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  outline: none;
+  transition: border-color var(--transition);
+}
+.mailbox-label-input:focus { border-color: var(--color-primary); }
+
+.new-mailbox-form-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
 
 /* 邮箱地址栏 */
 .email-bar {
@@ -152,14 +306,6 @@ body {
   justify-content: space-between;
   padding: 8px 14px;
   border-bottom: 1px solid var(--color-border);
-}
-
-.inbox-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
 }
 
 /* 邮件列表项 */
@@ -217,7 +363,7 @@ body {
   50%       { opacity: 0.25; }
 }
 
-/* ③ 邮件详情视图 */
+/* ── ③ 邮件详情视图 ── */
 .detail-header {
   display: flex;
   align-items: center;
@@ -260,10 +406,66 @@ body {
   overflow-y: auto;
 }
 
-/* 邮件正文内图片自适应宽度 */
 .detail-body img { max-width: 100%; height: auto; }
 
-/* ④ 错误横幅 */
+/* ── ④ 设置视图（F-13）── */
+.settings-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-body {
+  padding: 14px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.settings-row:last-child { border-bottom: none; }
+
+.settings-label {
+  font-size: 13px;
+  color: var(--color-text);
+  flex-shrink: 0;
+}
+
+/* 主题切换按钮组 */
+.theme-options {
+  display: flex;
+  gap: 4px;
+}
+
+.theme-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.theme-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
+
+/* 当前激活的主题按钮 */
+.theme-btn.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+}
+
+/* ── 错误横幅 ── */
 .error-banner {
   padding: 8px 14px;
   background: var(--color-error-bg);
@@ -272,7 +474,7 @@ body {
   font-size: 12px;
 }
 
-/* Toast 轻提示 */
+/* ── Toast 轻提示 ── */
 .toast {
   position: fixed;
   bottom: 14px;
