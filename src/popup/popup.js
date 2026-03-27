@@ -26,6 +26,7 @@ const MAX_MAILBOXES    = 5;                  // PRD 限制
 let mailboxes       = [];          // 邮箱对象数组 { id, address, label, createdAt, provider }
 let activeMailboxId = null;        // 当前激活邮箱 ID
 const pollTimers    = new Map();   // mailboxId → setInterval ID
+const pollingInFlight = new Set(); // 正在执行中的轮询请求，防止并发堆积
 const knownMailIds  = new Map();   // mailboxId → Set<messageId>（检测新邮件用）
 let currentLang     = 'zh';       // 当前语言
 
@@ -340,10 +341,14 @@ function startPolling(id) {
   if (id === activeMailboxId) $('poll-indicator').hidden = false;
 
   const timer = setInterval(async () => {
+    // 若上一次请求尚未完成，跳过本次 tick，避免并发堆积
+    if (pollingInFlight.has(id)) return;
+
     // 确认邮箱仍在列表中（防止已被删除后仍触发）
     const current = mailboxes.find(m => m.id === id);
     if (!current) { stopPolling(id); return; }
 
+    pollingInFlight.add(id);
     const { login, domain } = parseEmail(current.address);
     try {
       const messages = await apiGetMessages(login, domain);
@@ -357,6 +362,8 @@ function startPolling(id) {
       if (id === activeMailboxId) {
         setMailStatus(t('error_network'), true);
       }
+    } finally {
+      pollingInFlight.delete(id);
     }
   }, POLL_INTERVAL);
 
@@ -369,6 +376,7 @@ function stopPolling(id) {
     clearInterval(pollTimers.get(id));
     pollTimers.delete(id);
   }
+  pollingInFlight.delete(id);
   if (id === activeMailboxId) {
     const indicator = $('poll-indicator');
     if (indicator) indicator.hidden = true;
@@ -379,6 +387,7 @@ function stopPolling(id) {
 function stopAllPolling() {
   pollTimers.forEach(timer => clearInterval(timer));
   pollTimers.clear();
+  pollingInFlight.clear();
   const indicator = $('poll-indicator');
   if (indicator) indicator.hidden = true;
 }
@@ -626,10 +635,10 @@ async function migrateFromV1() {
   knownMailIds.set(mailbox.id, new Set());
 
   await browser.storage.local.set({
-    [KEY_MAILBOXES]:    mailboxes,
-    [KEY_ACTIVE_MB]:    activeMailboxId,
-    [KEY_LEGACY_EMAIL]: null,
+    [KEY_MAILBOXES]: mailboxes,
+    [KEY_ACTIVE_MB]: activeMailboxId,
   });
+  await browser.storage.local.remove(KEY_LEGACY_EMAIL);
 }
 
 /* ── 初始化入口 ──────────────────────────────────────────── */

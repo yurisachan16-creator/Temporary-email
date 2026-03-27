@@ -1,6 +1,6 @@
 {
   "name": "tempmail-plus",
-  "version": "1.0.0",
+  "version": "2.0.1",
   "description": "临时邮箱浏览器插件 - TempMail+",
   "private": true,
   "scripts": {

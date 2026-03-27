@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "TempMail+",
-  "version": "1.0.0",
+  "version": "2.0.1",
   "description": "快速生成临时邮箱，保护您的真实邮件地址",
 
   "browser_action": {

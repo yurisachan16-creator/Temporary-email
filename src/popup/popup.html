@@ -4,17 +4,10 @@
   <meta charset="UTF-8" />
   <title>TempMail+</title>
   <!--
-    主题初始化脚本：必须在 CSS 之前内联执行，防止深色模式出现闪烁（FOUC）
+    主题初始化脚本：必须在 CSS 之前同步执行，防止深色模式出现闪烁（FOUC）
     browser.storage 是异步的，此处使用同步的 localStorage 做镜像缓存
   -->
-  <script>
-    (function () {
-      var t = localStorage.getItem('tm_theme') || 'auto';
-      if (t === 'dark' || (t === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-        document.documentElement.setAttribute('data-theme', 'dark');
-      }
-    })();
-  </script>
+  <script src="theme-init.js"></script>
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
