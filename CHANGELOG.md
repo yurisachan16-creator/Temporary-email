@@ -6,6 +6,27 @@
 
 ## [未发布]
 
+## [2.0.0] - 2026-03-27
+
+### 新增（浏览器扩展版）
+- **F-10 多邮箱管理**：最多同时保存 5 个邮箱，选项卡切换，各自独立轮询
+  - `storage.js` 新增 `getAllMailboxes` / `addMailbox` / `removeMailbox` / `getActiveMailboxId` / `setActiveMailboxId`
+  - 邮箱支持备注标签（最多 20 字），选项卡显示标签或用户名
+  - 删除邮箱时自动切换到下一个，列表为空时回到空状态
+  - v1.x `currentEmail` 数据自动迁移到新格式
+- **F-13 深色模式**：跟随系统或手动切换浅色 / 深色主题
+  - `storage.js` 新增 `getTheme` / `setTheme`
+  - `popup.html` 头部内联脚本防止切换闪烁（FOUC）
+  - 新增设置视图（头部 ⚙ 按钮进入），包含主题三档选择器
+  - `popup.css` 新增 `[data-theme="dark"]` 完整深色色彩方案
+
+### 变更
+- `popup.js` 重写为多邮箱状态管理（`pollTimers Map`、`knownMailIds Map`）
+- i18n 新增多箱和主题相关文案（中/英各 14 个新键）
+
+### 测试
+- `storage.test.js` 新增 24 条测试，总计 138 条全部通过
+
 ## [1.2.0] - 2026-03-26
 
 ### 新增（Tampermonkey 版）
