@@ -48,10 +48,10 @@
 }
 
 body {
-  /* PRD 规格：宽度 380px 固定，高度 200-560px */
-  width: 380px;
-  min-height: 200px;
-  max-height: 560px;
+  /* v2.1：改为独立浮动窗口，宽高由用户自由调整 */
+  width: 100%;
+  min-width: 320px;
+  min-height: 400px;
   overflow-y: auto;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
                'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
@@ -413,7 +413,7 @@ body {
   line-height: 1.7;
   overflow-wrap: break-word;
   word-break: break-word;
-  max-height: 360px;
+  /* v2.1：独立窗口可自由拉高，不再限制最大高度 */
   overflow-y: auto;
 }
 

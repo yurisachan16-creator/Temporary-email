@@ -6,6 +6,19 @@
 
 ## [未发布]
 
+## [2.1.0] - 2026-03-28
+
+### 新增
+- **可移动、可缩放的独立浮动窗口（F-16）**：浏览器扩展弹窗改为独立 popup 窗口，支持拖动标题栏移动、拖动边角缩放，位置和尺寸在关闭后自动记忆，下次打开时恢复
+- 后台脚本新增 `windows` API 支持：点击图标创建独立窗口，若窗口已打开则聚焦而非重复创建
+
+### 变更
+- `background.js`：从空壳脚本升级为完整的窗口管理器，兼容 Chrome MV3（`chrome.action`）和 Firefox MV2（`browser.browserAction`）
+- `manifest.json` / `manifest.chrome.json`：移除 `action.default_popup`，新增 `windows` 权限
+- `manifest.firefox.json`：移除 `browser_action.default_popup`，新增 `windows` 权限
+- `popup.css`：`body` 由固定 `width: 380px` / `max-height: 560px` 改为自适应 `width: 100%` / `min-width: 320px`，适配任意窗口尺寸
+- 版本号升级至 **2.1.0**
+
 ## [2.0.2] - 2026-03-28
 
 ### 新增
