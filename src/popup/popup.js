@@ -1,477 +1,1001 @@
 /**
- * popup.js — TempMail+ 弹窗逻辑（v1.0 闭环版）
+ * popup.js — TempMail+ 弹窗逻辑（共享服务版）
  *
- * 依赖（按 HTML 加载顺序）：
- *   browser-polyfill.min.js → 提供 browser.* Promise API（兼容三端）
- *   dompurify.min.js        → 提供 DOMPurify，用于邮件 HTML 消毒
- *   translations.js         → 提供 window.TRANSLATIONS 语言包
- *
- * 功能覆盖（PRD v1.0）：
- *   F-04 邮件详情展示（渲染消毒后的 HTML 正文）
- *   F-05 自动填入（通过 content-script 填入页面输入框）
- *   F-06 轮询收件箱（每 10 s 刷新，弹窗关闭后自动停止）
- *   F-08 多语言（检测浏览器语言，zh / en 双语）
- *   F-09 本地持久化（browser.storage.local）
+ * 依赖：
+ *   - browser-polyfill：提供 browser.* Promise API
+ *   - DOMPurify：消毒邮件 HTML
+ *   - translations.js：注入 window.TRANSLATIONS
  */
 
-'use strict';
+import {
+  PROVIDERS,
+  generateMailbox,
+  getMailboxMessages,
+  readMailboxMessage,
+  discardMailboxSession,
+  getDomainTierLabel,
+} from '../api/mailService.js';
+import {
+  getAllMailboxes,
+  addMailbox,
+  removeMailbox,
+  getActiveMailboxId,
+  setActiveMailboxId,
+  getTheme,
+  setTheme,
+  getLanguage,
+  setLanguage,
+  getProviderSession,
+  setProviderSession,
+  clearProviderSession,
+} from '../utils/storage.js';
+import {
+  resolveDisplayLanguage,
+  createTranslator,
+  applyTranslations,
+} from './i18n.js';
 
 /* ── 常量 ───────────────────────────────────────────── */
-const API_BASE      = 'https://www.1secmail.com/api/v1/';
-const STORAGE_KEY   = 'currentEmail';   // 与 storage.js 保持一致
-const POLL_INTERVAL = 10_000;           // 轮询间隔（毫秒）
+const KEY_LEGACY_EMAIL = 'currentEmail'; // v1.x 兼容键（迁移用）
+const POLL_INTERVAL    = 10_000;
+const MAX_MAILBOXES    = 5;
 
 /* ── 运行时状态 ──────────────────────────────────────── */
-let currentEmail  = null;   // 当前使用的邮箱地址
-let pollTimer     = null;   // setInterval 句柄
-let currentLang   = 'zh';  // 当前语言（默认中文）
+let mailboxes            = [];
+let activeMailboxId      = null;
+let currentLangPreference = 'auto';
+let currentLang          = 'zh';
+let currentDetailMessage = null;
+let copyResetTimer       = null;
+let toastTimer           = null;
+let errorTimer           = null;
+
+const pollTimers       = new Map();
+const pollingInFlight  = new Set();
+const knownMailIds     = new Map();
+const currentMessages  = new Map();
+const providerSessions = new Map();
 
 /* ── 工具函数 ─────────────────────────────────────────── */
 
 /**
- * 通过 ID 获取 DOM 元素（简写）
+ * 通过 ID 获取元素
  * @param {string} id
  * @returns {HTMLElement}
  */
 function $(id) { return document.getElementById(id); }
 
 /**
- * 将邮箱地址拆分为 login 和 domain
+ * 获取当前激活邮箱对象
+ * @returns {object|null}
+ */
+function getActiveMailbox() {
+  return mailboxes.find((mailbox) => mailbox.id === activeMailboxId) || null;
+}
+
+/**
+ * 解析邮箱地址
  * @param {string} email
- * @returns {{ login: string, domain: string }}
+ * @returns {{login:string,domain:string}}
  */
 function parseEmail(email) {
-  const [login, domain] = email.split('@');
+  const [login = '', domain = ''] = String(email || '').split('@');
   return { login, domain };
 }
 
-/* ── 国际化 ──────────────────────────────────────────── */
-
 /**
- * 初始化语言：读取浏览器语言，匹配 zh / en，默认 zh
- */
-function initLang() {
-  const nav  = (navigator.language || 'zh').toLowerCase();
-  currentLang = nav.startsWith('en') ? 'en' : 'zh';
-}
-
-/**
- * 翻译键值查询
- * @param {string} key
+ * HTML 转义，避免列表渲染 XSS
+ * @param {string} value
  * @returns {string}
  */
-function t(key) {
-  const translations = window.TRANSLATIONS || {};
-  const pack     = translations[currentLang] || {};
-  const fallback = translations['en']        || {};
-  if (key in pack)     return pack[key];
-  if (key in fallback) return fallback[key];
-  return key;
-}
-
-/**
- * 将页面中所有 [data-i18n] 元素的文本替换为对应翻译
- */
-function applyI18n() {
-  document.querySelectorAll('[data-i18n]').forEach(el => {
-    const key = el.getAttribute('data-i18n');
-    el.textContent = t(key);
-  });
-  // 单独更新空状态描述（包含换行，不走 data-i18n）
-  const emptyDesc = $('empty-desc');
-  if (emptyDesc) emptyDesc.textContent = t('empty_desc');
-}
-
-/* ── API 调用 ─────────────────────────────────────────── */
-
-/**
- * 生成随机临时邮箱
- * @returns {Promise<string>}
- */
-async function apiGenerateEmail() {
-  const res = await fetch(`${API_BASE}?action=genRandomMailbox&count=1`);
-  if (!res.ok) throw new Error(`${t('error_network')}（${res.status}）`);
-  const [email] = await res.json();
-  return email;
-}
-
-/**
- * 获取指定邮箱的收件列表
- * @param {string} login
- * @param {string} domain
- * @returns {Promise<Array>}
- */
-async function apiGetMessages(login, domain) {
-  const res = await fetch(
-    `${API_BASE}?action=getMessages&login=${login}&domain=${domain}`
-  );
-  if (!res.ok) throw new Error(`${t('error_network')}（${res.status}）`);
-  return res.json();
-}
-
-/**
- * 读取单封邮件完整内容
- * @param {string} login
- * @param {string} domain
- * @param {number} msgId
- * @returns {Promise<Object>}
- */
-async function apiReadMessage(login, domain, msgId) {
-  const res = await fetch(
-    `${API_BASE}?action=readMessage&login=${login}&domain=${domain}&id=${msgId}`
-  );
-  if (!res.ok) throw new Error(`${t('error_network')}（${res.status}）`);
-  return res.json();
-}
-
-/* ── Storage ──────────────────────────────────────────── */
-
-/**
- * 读取已保存的邮箱地址
- * @returns {Promise<string|null>}
- */
-async function readSavedEmail() {
-  const result = await browser.storage.local.get(STORAGE_KEY);
-  return result[STORAGE_KEY] || null;
-}
-
-/**
- * 持久化保存邮箱地址
- * @param {string} email
- */
-async function persistEmail(email) {
-  await browser.storage.local.set({ [STORAGE_KEY]: email });
-}
-
-/**
- * 清除已保存的邮箱地址
- */
-async function eraseEmail() {
-  await browser.storage.local.remove(STORAGE_KEY);
-}
-
-/* ── Toast 轻提示 ─────────────────────────────────────── */
-
-let toastTimer = null;
-
-/**
- * 显示 Toast 提示，2 秒后自动消失
- * @param {string} message
- */
-function showToast(message) {
-  const el = $('toast');
-  el.textContent = message;
-  el.classList.add('visible');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('visible'), 2000);
-}
-
-/* ── 错误横幅 ──────────────────────────────────────────── */
-
-/**
- * 在底部横幅显示错误信息，3 秒后自动消失
- * @param {string} message
- */
-function showError(message) {
-  const el = $('view-error');
-  el.hidden      = false;
-  el.textContent = `⚠ ${message}`;
-  setTimeout(() => { el.hidden = true; }, 3000);
-}
-
-/* ── UI 视图切换 ────────────────────────────────────────── */
-
-/**
- * 显示空状态视图（尚未生成邮箱）
- */
-function showEmpty() {
-  $('view-empty').hidden  = false;
-  $('view-main').hidden   = true;
-  $('view-detail').hidden = true;
-  $('view-error').hidden  = true;
-  stopPolling();
-}
-
-/**
- * 显示主视图（已有邮箱）
- * @param {string} email
- */
-function showMain(email) {
-  $('view-empty').hidden  = true;
-  $('view-main').hidden   = false;
-  $('view-detail').hidden = true;
-  const el = $('email-address');
-  el.textContent = email;
-  el.title       = email;
-}
-
-/**
- * 显示邮件详情视图
- * @param {Object} msg - 邮件完整内容（来自 readMessage API）
- */
-function showDetail(msg) {
-  $('view-empty').hidden  = true;
-  $('view-main').hidden   = true;
-  $('view-detail').hidden = false;
-
-  // 主题
-  $('detail-subject').textContent = msg.subject || t('no_subject');
-
-  // 发件人
-  $('detail-from').textContent = `${t('mail_from')}: ${msg.from || ''}`;
-
-  // 时间
-  $('detail-date').textContent = `${t('mail_date')}: ${msg.date || ''}`;
-
-  // 正文：优先 HTML，使用 DOMPurify 消毒后渲染；无 HTML 则使用纯文本
-  const detailBody = $('detail-body');
-  if (msg.htmlBody && msg.htmlBody.trim()) {
-    detailBody.innerHTML = DOMPurify.sanitize(msg.htmlBody);
-  } else {
-    // 纯文本：转义后放入 <pre> 风格的 div
-    detailBody.textContent = msg.textBody || '';
-  }
-}
-
-/* ── 邮件列表渲染 ───────────────────────────────────────── */
-
-/**
- * 在邮件列表区域展示状态文字
- * @param {string} text
- * @param {boolean} [isError=false]
- */
-function setMailStatus(text, isError = false) {
-  $('mail-list').innerHTML =
-    `<div class="state-text${isError ? ' is-error' : ''}">${text}</div>`;
-}
-
-/** 上一次渲染时的邮件 ID 集合（用于检测新邮件） */
-let knownMailIds = new Set();
-
-/**
- * 将收件列表渲染到 DOM，并检测新邮件
- * @param {Array} messages
- */
-function renderMessages(messages) {
-  if (messages.length === 0) {
-    setMailStatus(t('no_mail'));
-    return;
-  }
-
-  // 检测新邮件
-  const newIds = messages.map(m => m.id);
-  const hasNew = newIds.some(id => !knownMailIds.has(id));
-  if (hasNew && knownMailIds.size > 0) {
-    // 首次加载不提示，后续轮询有新邮件才提示
-    showToast(t('new_mail'));
-  }
-  knownMailIds = new Set(newIds);
-
-  $('mail-list').innerHTML = messages.map(msg => `
-    <div class="mail-item" data-id="${msg.id}" role="button" tabindex="0">
-      <div class="mail-from">${escHtml(msg.from)}</div>
-      <div class="mail-subject">${escHtml(msg.subject || t('no_subject'))}</div>
-      <div class="mail-date">${escHtml(msg.date)}</div>
-    </div>
-  `).join('');
-
-  // 为每个邮件条目绑定点击事件
-  $('mail-list').querySelectorAll('.mail-item').forEach(item => {
-    item.addEventListener('click', () => handleMailClick(Number(item.dataset.id)));
-  });
-}
-
-/**
- * HTML 特殊字符转义（仅用于列表中纯文本展示）
- * @param {string} str
- * @returns {string}
- */
-function escHtml(str) {
-  return String(str || '')
+function escHtml(value) {
+  return String(value || '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
 
-/* ── 轮询收件箱 ─────────────────────────────────────────── */
-
 /**
- * 启动轮询（每 POLL_INTERVAL 毫秒刷新一次收件箱）
- * @param {string} email
+ * 生成唯一 ID
+ * @returns {string}
  */
-function startPolling(email) {
-  stopPolling(); // 防止重复启动
-  $('poll-indicator').hidden = false;
-  pollTimer = setInterval(() => loadMessages(email), POLL_INTERVAL);
+function generateId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
 /**
- * 停止轮询并隐藏状态指示器
+ * 当前翻译函数
+ * @param {string} key
+ * @returns {string}
  */
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
+function t(key) {
+  const translate = createTranslator(window.TRANSLATIONS || {}, currentLang);
+  return translate(key);
+}
+
+/**
+ * 将 provider 标准化为存储用值
+ * @param {string} provider
+ * @returns {string}
+ */
+function normalizeProvider(provider) {
+  return provider === PROVIDERS.mailTm || provider === 'mail.tm'
+    ? PROVIDERS.mailTm
+    : PROVIDERS.oneSecMail;
+}
+
+/* ── 国际化 ──────────────────────────────────────────── */
+
+/**
+ * 解析并写入当前展示语言
+ * @returns {void}
+ */
+function resolveCurrentLanguage() {
+  currentLang = resolveDisplayLanguage(currentLangPreference, navigator.language || 'zh');
+  document.documentElement.lang = currentLang;
+}
+
+/**
+ * 更新语言选择按钮激活态
+ * @returns {void}
+ */
+function syncLanguageButtons() {
+  document.querySelectorAll('.language-btn').forEach((button) => {
+    button.classList.toggle('active', button.dataset.value === currentLangPreference);
+  });
+}
+
+/**
+ * 将当前语言刷新到界面
+ * @returns {void}
+ */
+function applyI18n() {
+  resolveCurrentLanguage();
+  applyTranslations(document, t);
+  syncLanguageButtons();
+
+  const activeMailbox = getActiveMailbox();
+  const badge = $('domain-badge');
+  if (badge && activeMailbox) {
+    const domain = parseEmail(activeMailbox.address).domain;
+    const label = getDomainTierLabel(domain, currentLang);
+    badge.textContent = label;
+    badge.title = label;
   }
-  const indicator = $('poll-indicator');
-  if (indicator) indicator.hidden = true;
+
+  if (!copyResetTimer) {
+    $('btn-copy').textContent = t('copy');
+  }
+
+  if (!$('new-mailbox-form').hidden) {
+    $('mailbox-label-input').placeholder = t('label_placeholder');
+  }
+
+  if ($('view-detail').hidden === false && currentDetailMessage) {
+    showDetail(currentDetailMessage);
+    return;
+  }
+
+  if ($('view-settings').hidden === false) {
+    showSettings();
+    return;
+  }
+
+  if ($('view-main').hidden === false) {
+    const messages = currentMessages.get(activeMailboxId);
+    showMain(activeMailbox);
+    if (messages) {
+      renderMessages(activeMailboxId, messages);
+    }
+    return;
+  }
+
+  showEmpty();
 }
 
-/* ── 加载收件箱 ─────────────────────────────────────────── */
+/**
+ * 保存语言偏好并立即刷新界面
+ * @param {'auto'|'zh'|'en'} language
+ * @returns {Promise<void>}
+ */
+async function saveLanguagePreference(language) {
+  currentLangPreference = language;
+  await setLanguage(language);
+  applyI18n();
+}
+
+/* ── 主题管理 ────────────────────────────────────────── */
 
 /**
- * 加载并渲染指定邮箱的收件列表
- * @param {string} email
+ * 将主题应用到 DOM 并镜像到 localStorage
+ * @param {'auto'|'light'|'dark'} theme
+ * @returns {void}
  */
-async function loadMessages(email) {
-  const { login, domain } = parseEmail(email);
+function applyTheme(theme) {
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const isDark = theme === 'dark' || (theme === 'auto' && prefersDark);
+
+  if (isDark) {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+
+  localStorage.setItem('tm_theme', theme);
+
+  document.querySelectorAll('.theme-btn').forEach((button) => {
+    button.classList.toggle('active', button.dataset.value === theme);
+  });
+}
+
+/* ── Storage 与会话 ─────────────────────────────────── */
+
+/**
+ * 迁移 v1.x 单邮箱数据到 v2.0 结构
+ * @returns {Promise<void>}
+ */
+async function migrateFromV1() {
+  const result = await browser.storage.local.get(KEY_LEGACY_EMAIL);
+  const legacyEmail = result[KEY_LEGACY_EMAIL];
+
+  if (!legacyEmail || mailboxes.length > 0) return;
+
+  const mailbox = {
+    id:        generateId(),
+    address:   legacyEmail,
+    label:     '',
+    createdAt: Date.now(),
+    provider:  PROVIDERS.oneSecMail,
+  };
+
+  mailboxes.push(mailbox);
+  activeMailboxId = mailbox.id;
+  knownMailIds.set(mailbox.id, new Set());
+  currentMessages.set(mailbox.id, []);
+
+  await browser.storage.local.set({
+    mailboxes,
+    activeMailboxId,
+  });
+  await browser.storage.local.remove(KEY_LEGACY_EMAIL);
+}
+
+/**
+ * 加载所有 provider 会话到内存映射
+ * @returns {Promise<void>}
+ */
+async function loadProviderSessions() {
+  providerSessions.clear();
+
+  await Promise.all(mailboxes.map(async (mailbox) => {
+    const session = await getProviderSession(mailbox.address);
+    if (session) {
+      providerSessions.set(mailbox.address, session);
+    }
+  }));
+}
+
+/**
+ * 读取指定邮箱的 provider 会话
+ * @param {object} mailbox
+ * @returns {object|null}
+ */
+function readProviderSession(mailbox) {
+  return providerSessions.get(mailbox.address) || null;
+}
+
+/**
+ * 持久化并缓存指定邮箱的 provider 会话
+ * @param {string} address
+ * @param {object|null} session
+ * @returns {Promise<void>}
+ */
+async function persistProviderSession(address, session) {
+  if (!session) return;
+  providerSessions.set(address, session);
+  await setProviderSession(address, session);
+}
+
+/**
+ * 清除指定邮箱的 provider 会话
+ * @param {string} address
+ * @returns {Promise<void>}
+ */
+async function eraseProviderSession(address) {
+  providerSessions.delete(address);
+  await clearProviderSession(address);
+}
+
+/* ── Toast 与错误提示 ───────────────────────────────── */
+
+/**
+ * 显示 Toast 提示
+ * @param {string} message
+ * @returns {void}
+ */
+function showToast(message) {
+  const element = $('toast');
+  element.textContent = message;
+  element.classList.add('visible');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => element.classList.remove('visible'), 2000);
+}
+
+/**
+ * 显示错误横幅
+ * @param {string} message
+ * @returns {void}
+ */
+function showError(message) {
+  const element = $('view-error');
+  element.hidden = false;
+  element.textContent = `⚠ ${message}`;
+  clearTimeout(errorTimer);
+  errorTimer = setTimeout(() => { element.hidden = true; }, 3500);
+}
+
+/* ── 视图切换 ───────────────────────────────────────── */
+
+/**
+ * 显示空状态
+ * @returns {void}
+ */
+function showEmpty() {
+  $('view-empty').hidden = false;
+  $('view-main').hidden = true;
+  $('view-detail').hidden = true;
+  $('view-settings').hidden = true;
+  $('view-error').hidden = true;
+  currentDetailMessage = null;
+  stopAllPolling();
+}
+
+/**
+ * 显示主视图
+ * @param {object|null} mailbox
+ * @returns {void}
+ */
+function showMain(mailbox) {
+  $('view-empty').hidden = true;
+  $('view-main').hidden = false;
+  $('view-detail').hidden = true;
+  $('view-settings').hidden = true;
+  currentDetailMessage = null;
+
+  if (!mailbox) return;
+
+  const emailAddress = $('email-address');
+  emailAddress.textContent = mailbox.address;
+  emailAddress.title = mailbox.address;
+
+  const domain = parseEmail(mailbox.address).domain;
+  const domainBadge = $('domain-badge');
+  const tierLabel = getDomainTierLabel(domain, currentLang);
+  domainBadge.textContent = tierLabel;
+  domainBadge.title = tierLabel;
+
+  renderTabs();
+}
+
+/**
+ * 显示邮件详情
+ * @param {object} message
+ * @returns {void}
+ */
+function showDetail(message) {
+  $('view-empty').hidden = true;
+  $('view-main').hidden = true;
+  $('view-detail').hidden = false;
+  $('view-settings').hidden = true;
+  currentDetailMessage = message;
+
+  $('detail-subject').textContent = message.subject || t('no_subject');
+  $('detail-from').textContent = `${t('mail_from')}: ${message.from || ''}`;
+  $('detail-date').textContent = `${t('mail_date')}: ${message.date || ''}`;
+
+  const detailBody = $('detail-body');
+  if (message.htmlBody && message.htmlBody.trim()) {
+    detailBody.innerHTML = DOMPurify.sanitize(message.htmlBody);
+  } else {
+    detailBody.textContent = message.textBody || '';
+  }
+}
+
+/**
+ * 显示设置视图
+ * @returns {void}
+ */
+function showSettings() {
+  $('view-empty').hidden = true;
+  $('view-main').hidden = true;
+  $('view-detail').hidden = true;
+  $('view-settings').hidden = false;
+
+  const savedTheme = localStorage.getItem('tm_theme') || 'auto';
+  document.querySelectorAll('.theme-btn').forEach((button) => {
+    button.classList.toggle('active', button.dataset.value === savedTheme);
+  });
+  syncLanguageButtons();
+}
+
+/* ── 邮箱选项卡 ─────────────────────────────────────── */
+
+/**
+ * 渲染所有邮箱选项卡
+ * @returns {void}
+ */
+function renderTabs() {
+  const container = $('mailbox-tabs');
+  container.innerHTML = '';
+
+  mailboxes.forEach((mailbox) => {
+    const tab = document.createElement('div');
+    tab.className = `mailbox-tab${mailbox.id === activeMailboxId ? ' active' : ''}`;
+    tab.dataset.id = mailbox.id;
+
+    const name = document.createElement('span');
+    name.className = 'tab-name';
+    name.textContent = mailbox.label || parseEmail(mailbox.address).login;
+    name.title = mailbox.address;
+
+    const closeButton = document.createElement('button');
+    closeButton.className = 'tab-close';
+    closeButton.type = 'button';
+    closeButton.textContent = '✕';
+    closeButton.title = t('discard');
+    closeButton.dataset.id = mailbox.id;
+
+    tab.appendChild(name);
+    tab.appendChild(closeButton);
+
+    tab.addEventListener('click', (event) => {
+      if (!event.target.classList.contains('tab-close')) {
+        void switchToMailbox(mailbox.id);
+      }
+    });
+
+    closeButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      void handleDeleteMailbox(mailbox.id);
+    });
+
+    container.appendChild(tab);
+  });
+
+  const addButton = $('btn-new-mailbox');
+  const atLimit = mailboxes.length >= MAX_MAILBOXES;
+  addButton.disabled = atLimit;
+  addButton.title = atLimit ? t('mailbox_limit') : t('new_mailbox');
+}
+
+/* ── 收件列表 ───────────────────────────────────────── */
+
+/**
+ * 设置列表状态文案
+ * @param {string} text
+ * @param {boolean} [isError]
+ * @returns {void}
+ */
+function setMailStatus(text, isError = false) {
+  $('mail-list').innerHTML =
+    `<div class="state-text${isError ? ' is-error' : ''}">${escHtml(text)}</div>`;
+}
+
+/**
+ * 渲染邮件列表
+ * @param {string} mailboxId
+ * @param {Array<object>} messages
+ * @returns {void}
+ */
+function renderMessages(mailboxId, messages) {
+  currentMessages.set(mailboxId, messages);
+
+  if (!messages || messages.length === 0) {
+    setMailStatus(t('no_mail'));
+    return;
+  }
+
+  const newIds = messages.map((message) => String(message.id));
+  const previousIds = knownMailIds.get(mailboxId) || new Set();
+  const hasNewMail = previousIds.size > 0 && newIds.some((id) => !previousIds.has(id));
+
+  if (hasNewMail) {
+    showToast(t('new_mail'));
+  }
+
+  knownMailIds.set(mailboxId, new Set(newIds));
+
+  $('mail-list').innerHTML = messages.map((message) => `
+    <div class="mail-item" data-id="${message.id}" role="button" tabindex="0">
+      <div class="mail-from">${escHtml(message.from)}</div>
+      <div class="mail-subject">${escHtml(message.subject || t('no_subject'))}</div>
+      <div class="mail-date">${escHtml(message.date)}</div>
+    </div>
+  `).join('');
+
+  $('mail-list').querySelectorAll('.mail-item').forEach((item) => {
+    const openMessage = () => handleMailClick(item.dataset.id);
+    item.addEventListener('click', openMessage);
+    item.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openMessage();
+      }
+    });
+  });
+}
+
+/* ── 轮询 ───────────────────────────────────────────── */
+
+/**
+ * 启动指定邮箱轮询
+ * @param {string} mailboxId
+ * @returns {void}
+ */
+function startPolling(mailboxId) {
+  stopPolling(mailboxId);
+
+  const mailbox = mailboxes.find((item) => item.id === mailboxId);
+  if (!mailbox) return;
+
+  if (mailboxId === activeMailboxId) {
+    $('poll-indicator').hidden = false;
+  }
+
+  const timer = setInterval(async () => {
+    if (pollingInFlight.has(mailboxId)) return;
+
+    const currentMailbox = mailboxes.find((item) => item.id === mailboxId);
+    if (!currentMailbox) {
+      stopPolling(mailboxId);
+      return;
+    }
+
+    pollingInFlight.add(mailboxId);
+    try {
+      const session = readProviderSession(currentMailbox);
+      const result = await getMailboxMessages(currentMailbox, session);
+      await persistProviderSession(currentMailbox.address, result.session);
+
+      if (mailboxId === activeMailboxId) {
+        renderMessages(mailboxId, result.messages);
+      } else {
+        currentMessages.set(mailboxId, result.messages);
+        knownMailIds.set(
+          mailboxId,
+          new Set(result.messages.map((message) => String(message.id)))
+        );
+      }
+    } catch (error) {
+      if (mailboxId === activeMailboxId) {
+        setMailStatus(error.message || t('error_network'), true);
+      }
+    } finally {
+      pollingInFlight.delete(mailboxId);
+    }
+  }, POLL_INTERVAL);
+
+  pollTimers.set(mailboxId, timer);
+}
+
+/**
+ * 停止指定邮箱轮询
+ * @param {string} mailboxId
+ * @returns {void}
+ */
+function stopPolling(mailboxId) {
+  if (pollTimers.has(mailboxId)) {
+    clearInterval(pollTimers.get(mailboxId));
+    pollTimers.delete(mailboxId);
+  }
+
+  pollingInFlight.delete(mailboxId);
+
+  if (mailboxId === activeMailboxId) {
+    $('poll-indicator').hidden = true;
+  }
+}
+
+/**
+ * 停止全部轮询
+ * @returns {void}
+ */
+function stopAllPolling() {
+  pollTimers.forEach((timer) => clearInterval(timer));
+  pollTimers.clear();
+  pollingInFlight.clear();
+  $('poll-indicator').hidden = true;
+}
+
+/**
+ * 加载指定邮箱收件列表
+ * @param {object} mailbox
+ * @returns {Promise<void>}
+ */
+async function loadMessages(mailbox) {
+  if (!mailbox) return;
+
   try {
-    const messages = await apiGetMessages(login, domain);
-    renderMessages(messages);
-  } catch (e) {
-    setMailStatus(e.message, true);
+    const session = readProviderSession(mailbox);
+    const result = await getMailboxMessages(mailbox, session);
+    await persistProviderSession(mailbox.address, result.session);
+
+    if (mailbox.id === activeMailboxId) {
+      renderMessages(mailbox.id, result.messages);
+    } else {
+      currentMessages.set(mailbox.id, result.messages);
+    }
+  } catch (error) {
+    if (mailbox.id === activeMailboxId) {
+      setMailStatus(error.message || t('error_network'), true);
+    }
   }
 }
 
-/* ── 事件处理器 ─────────────────────────────────────────── */
+/* ── 邮箱管理 ───────────────────────────────────────── */
 
 /**
- * 生成新临时邮箱
+ * 切换激活邮箱
+ * @param {string} mailboxId
+ * @returns {Promise<void>}
+ */
+async function switchToMailbox(mailboxId) {
+  activeMailboxId = mailboxId;
+  await setActiveMailboxId(mailboxId);
+
+  const mailbox = getActiveMailbox();
+  if (!mailbox) return;
+
+  showMain(mailbox);
+  setMailStatus(t('loading'));
+  await loadMessages(mailbox);
+  startPolling(mailboxId);
+}
+
+/**
+ * 新增邮箱并自动切换
+ * @param {{address:string,provider:string,label:string,session:object}} options
+ * @returns {Promise<void>}
+ */
+async function addGeneratedMailbox(options) {
+  const mailbox = await addMailbox({
+    address:  options.address,
+    label:    options.label,
+    provider: normalizeProvider(options.provider),
+  });
+
+  knownMailIds.set(mailbox.id, new Set());
+  currentMessages.set(mailbox.id, []);
+  await persistProviderSession(mailbox.address, options.session);
+  mailboxes = await getAllMailboxes();
+  await switchToMailbox(mailbox.id);
+}
+
+/* ── 事件处理 ───────────────────────────────────────── */
+
+/**
+ * 生成首个邮箱
+ * @returns {Promise<void>}
  */
 async function handleGenerate() {
-  const btn = $('btn-generate');
-  btn.disabled    = true;
-  btn.textContent = t('loading');
+  const button = $('btn-generate');
+  button.disabled = true;
+  button.textContent = t('loading');
 
   try {
-    const email = await apiGenerateEmail();
-    await persistEmail(email);
-    currentEmail = email;
-    knownMailIds = new Set(); // 重置已知邮件集合
-    showMain(email);
-    setMailStatus(t('loading'));
-    await loadMessages(email);
-    startPolling(email);
-  } catch (e) {
-    showError(e.message);
-    btn.disabled    = false;
-    btn.textContent = t('generate');
+    const result = await generateMailbox();
+    await addGeneratedMailbox({
+      address:  result.address,
+      provider: result.provider,
+      session:  result.session,
+      label:    '',
+    });
+  } catch (error) {
+    showError(error.message || t('error_network'));
+    button.disabled = false;
+    button.textContent = t('generate');
   }
 }
 
 /**
- * 复制邮箱地址到剪贴板
+ * 打开新建邮箱表单
+ * @returns {void}
+ */
+function handleNewMailbox() {
+  $('new-mailbox-form').hidden = false;
+  $('mailbox-label-input').placeholder = t('label_placeholder');
+  $('mailbox-label-input').value = '';
+  $('mailbox-label-input').focus();
+}
+
+/**
+ * 确认生成新邮箱
+ * @returns {Promise<void>}
+ */
+async function handleConfirmNew() {
+  const button = $('btn-confirm-new');
+  const label = $('mailbox-label-input').value.trim();
+
+  button.disabled = true;
+  button.textContent = t('generating');
+
+  try {
+    const result = await generateMailbox();
+    $('new-mailbox-form').hidden = true;
+    await addGeneratedMailbox({
+      address:  result.address,
+      provider: result.provider,
+      session:  result.session,
+      label,
+    });
+  } catch (error) {
+    showError(error.message || t('error_network'));
+  } finally {
+    button.disabled = false;
+    button.textContent = t('confirm_new');
+  }
+}
+
+/**
+ * 取消新建邮箱
+ * @returns {void}
+ */
+function handleCancelNew() {
+  $('new-mailbox-form').hidden = true;
+  $('mailbox-label-input').value = '';
+}
+
+/**
+ * 删除指定邮箱
+ * @param {string} mailboxId
+ * @returns {Promise<void>}
+ */
+async function handleDeleteMailbox(mailboxId) {
+  if (!confirm(t('delete_mailbox_confirm'))) return;
+
+  const mailbox = mailboxes.find((item) => item.id === mailboxId);
+  if (!mailbox) return;
+
+  stopPolling(mailboxId);
+
+  try {
+    const session = readProviderSession(mailbox);
+    await discardMailboxSession(mailbox, session);
+  } catch {
+    // 远端删除失败不阻塞本地清理
+  }
+
+  await eraseProviderSession(mailbox.address);
+  currentMessages.delete(mailboxId);
+  knownMailIds.delete(mailboxId);
+  await removeMailbox(mailboxId);
+
+  mailboxes = await getAllMailboxes();
+
+  if (mailboxes.length === 0) {
+    activeMailboxId = null;
+    await setActiveMailboxId(null);
+    showEmpty();
+    return;
+  }
+
+  if (mailboxId === activeMailboxId) {
+    const nextMailbox = mailboxes[0];
+    await switchToMailbox(nextMailbox.id);
+  } else {
+    renderTabs();
+  }
+}
+
+/**
+ * 复制当前邮箱地址
+ * @returns {Promise<void>}
  */
 async function handleCopy() {
-  if (!currentEmail) return;
+  const mailbox = getActiveMailbox();
+  if (!mailbox) return;
+
   try {
-    await navigator.clipboard.writeText(currentEmail);
-    const btn = $('btn-copy');
-    const orig = btn.textContent;
-    btn.textContent = t('copied');
-    setTimeout(() => { btn.textContent = orig; }, 2000);
+    await navigator.clipboard.writeText(mailbox.address);
+    const button = $('btn-copy');
+    button.textContent = t('copied');
+    clearTimeout(copyResetTimer);
+    copyResetTimer = setTimeout(() => {
+      button.textContent = t('copy');
+      copyResetTimer = null;
+    }, 2000);
   } catch {
     showError(t('error_network'));
   }
 }
 
 /**
- * 刷新收件列表
+ * 手动刷新收件箱
+ * @returns {Promise<void>}
  */
 async function handleRefresh() {
-  if (!currentEmail) return;
+  const mailbox = getActiveMailbox();
+  if (!mailbox) return;
+
   setMailStatus(t('loading'));
-  await loadMessages(currentEmail);
+  await loadMessages(mailbox);
 }
 
 /**
- * 丢弃当前邮箱并回到空状态（需用户确认）
+ * 丢弃当前邮箱
+ * @returns {Promise<void>}
  */
 async function handleDiscard() {
-  if (!confirm(t('confirm_discard'))) return;
-  stopPolling();
-  await eraseEmail();
-  currentEmail = null;
-  knownMailIds = new Set();
-  showEmpty();
-}
-
-/**
- * 点击邮件条目，加载并显示详情
- * @param {number} msgId
- */
-async function handleMailClick(msgId) {
-  if (!currentEmail) return;
-  const { login, domain } = parseEmail(currentEmail);
-  try {
-    const msg = await apiReadMessage(login, domain, msgId);
-    showDetail(msg);
-  } catch (e) {
-    showError(e.message);
+  if (activeMailboxId) {
+    await handleDeleteMailbox(activeMailboxId);
   }
 }
 
 /**
- * 从详情视图返回主视图
+ * 打开指定邮件详情
+ * @param {string|number} messageId
+ * @returns {Promise<void>}
  */
-function handleBack() {
-  showMain(currentEmail);
+async function handleMailClick(messageId) {
+  const mailbox = getActiveMailbox();
+  if (!mailbox) return;
+
+  try {
+    const session = readProviderSession(mailbox);
+    const result = await readMailboxMessage(mailbox, session, messageId);
+    await persistProviderSession(mailbox.address, result.session);
+    showDetail(result.message);
+  } catch (error) {
+    showError(error.message || t('error_network'));
+  }
 }
 
 /**
- * 自动将邮箱地址填入当前标签页的输入框（F-05）
+ * 返回主视图
+ * @returns {void}
+ */
+function handleBack() {
+  const mailbox = getActiveMailbox();
+  if (mailbox) {
+    showMain(mailbox);
+    const messages = currentMessages.get(mailbox.id);
+    if (messages) {
+      renderMessages(mailbox.id, messages);
+    }
+  }
+}
+
+/**
+ * 自动填入邮箱
+ * @returns {Promise<void>}
  */
 async function handleAutoFill() {
-  if (!currentEmail) return;
+  const mailbox = getActiveMailbox();
+  if (!mailbox) return;
+
   try {
-    // 获取当前激活标签页
     const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-    if (!tab) { showError(t('error_no_input')); return; }
+    if (!tab) {
+      showError(t('error_no_input'));
+      return;
+    }
 
     const response = await browser.tabs.sendMessage(tab.id, {
       action: 'fillEmail',
-      email:  currentEmail
+      email:  mailbox.address,
     });
 
-    if (response && response.success) {
+    if (response?.success) {
       showToast(t('auto_fill_success'));
     } else {
       showError(t('error_no_input'));
     }
   } catch {
-    // content script 未注入（例如 chrome:// 页面）
     showError(t('error_no_input'));
   }
 }
 
-/* ── 初始化入口 ──────────────────────────────────────────── */
+/**
+ * 打开设置页
+ * @returns {void}
+ */
+function handleOpenSettings() {
+  showSettings();
+}
 
-document.addEventListener('DOMContentLoaded', async () => {
-  // 初始化语言并应用翻译
-  initLang();
-  applyI18n();
-
-  // 绑定按钮事件
-  $('btn-generate').addEventListener('click', handleGenerate);
-  $('btn-copy').addEventListener('click',     handleCopy);
-  $('btn-refresh').addEventListener('click',  handleRefresh);
-  $('btn-discard').addEventListener('click',  handleDiscard);
-  $('btn-autofill').addEventListener('click', handleAutoFill);
-  $('btn-back').addEventListener('click',     handleBack);
-
-  // 从 storage 恢复上次的邮箱
-  currentEmail = await readSavedEmail();
-
-  if (currentEmail) {
-    showMain(currentEmail);
-    setMailStatus(t('loading'));
-    await loadMessages(currentEmail);
-    startPolling(currentEmail); // 恢复轮询
+/**
+ * 从设置页返回
+ * @returns {void}
+ */
+function handleSettingsBack() {
+  const mailbox = getActiveMailbox();
+  if (mailbox) {
+    showMain(mailbox);
+    const messages = currentMessages.get(mailbox.id);
+    if (messages) {
+      renderMessages(mailbox.id, messages);
+    }
   } else {
     showEmpty();
   }
+}
+
+/**
+ * 保存主题偏好
+ * @param {'auto'|'light'|'dark'} theme
+ * @returns {Promise<void>}
+ */
+async function handleThemeChange(theme) {
+  await setTheme(theme);
+  applyTheme(theme);
+}
+
+/* ── 初始化 ─────────────────────────────────────────── */
+
+document.addEventListener('DOMContentLoaded', async () => {
+  $('btn-generate').addEventListener('click', handleGenerate);
+  $('btn-new-mailbox').addEventListener('click', handleNewMailbox);
+  $('btn-confirm-new').addEventListener('click', handleConfirmNew);
+  $('btn-cancel-new').addEventListener('click', handleCancelNew);
+  $('btn-copy').addEventListener('click', handleCopy);
+  $('btn-refresh').addEventListener('click', handleRefresh);
+  $('btn-discard').addEventListener('click', handleDiscard);
+  $('btn-autofill').addEventListener('click', handleAutoFill);
+  $('btn-back').addEventListener('click', handleBack);
+  $('btn-settings').addEventListener('click', handleOpenSettings);
+  $('btn-settings-back').addEventListener('click', handleSettingsBack);
+
+  document.querySelectorAll('.theme-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      void handleThemeChange(button.dataset.value);
+    });
+  });
+
+  document.querySelectorAll('.language-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      void saveLanguagePreference(button.dataset.value);
+    });
+  });
+
+  applyTheme(await getTheme());
+
+  currentLangPreference = await getLanguage();
+  applyI18n();
+
+  mailboxes = await getAllMailboxes();
+  activeMailboxId = await getActiveMailboxId();
+
+  await migrateFromV1();
+
+  if (!mailboxes.length) {
+    mailboxes = await getAllMailboxes();
+    activeMailboxId = await getActiveMailboxId();
+  }
+
+  await loadProviderSessions();
+
+  mailboxes.forEach((mailbox) => {
+    if (!knownMailIds.has(mailbox.id)) knownMailIds.set(mailbox.id, new Set());
+    if (!currentMessages.has(mailbox.id)) currentMessages.set(mailbox.id, []);
+  });
+
+  if (mailboxes.length === 0) {
+    showEmpty();
+    return;
+  }
+
+  if (!mailboxes.find((mailbox) => mailbox.id === activeMailboxId)) {
+    activeMailboxId = mailboxes[0].id;
+    await setActiveMailboxId(activeMailboxId);
+  }
+
+  const activeMailbox = getActiveMailbox();
+  showMain(activeMailbox);
+  setMailStatus(t('loading'));
+  await loadMessages(activeMailbox);
+
+  mailboxes.forEach((mailbox) => startPolling(mailbox.id));
 });
 
-// 弹窗关闭时自动清理轮询（pagehide 在 Chrome MV3 中更可靠）
-window.addEventListener('pagehide', stopPolling);
+window.addEventListener('pagehide', stopAllPolling);

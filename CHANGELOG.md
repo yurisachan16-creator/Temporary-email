@@ -6,6 +6,53 @@
 
 ## [未发布]
 
+## [2.0.2] - 2026-03-28
+
+### 新增
+- **浏览器扩展双提供商回退**：扩展版邮件服务升级为共享 `mailService`，优先使用 1secmail 冷门域名，遇到 403 / 429 / 5xx / 网络失败时自动回退到 mail.tm
+- **手动语言切换**：浏览器扩展与 Tampermonkey 版均新增 `auto / zh / en` 语言切换，并持久化保存用户偏好
+- **域名信誉徽章**：浏览器扩展主视图补充冷门 / 中等 / 常见徽章，与 Tampermonkey 版行为对齐
+- **popup i18n 辅助测试**：新增弹窗语言解析与 DOM 翻译测试
+
+### 变更
+- `popup.js` 改为复用共享 `mailService` 与 `storage`，统一 provider、session、语言状态管理
+- `storage.js` 新增语言偏好与 provider 会话映射能力
+- manifest 新增 `https://api.mail.tm/*` 权限，支持浏览器扩展访问备用服务
+- 测试总数更新为 **157** 条并全部通过
+
+### 修复
+- **浏览器扩展 403 可见报错**：不再依赖 `genRandomMailbox`，改为 `getDomainList + 本地构造地址`，规避“加载解压缩扩展”场景下的 403 问题
+- **mail.tm 远端清理**：删除 mail.tm 邮箱时同步删除远端账号并清理本地 provider 会话
+
+## [2.0.1] - 2026-03-27
+
+### 修复
+- **MV3 CSP 兼容**：将 `popup.html` 中的主题初始化内联脚本提取为独立文件 `theme-init.js`，避免被 Manifest V3 默认 CSP 阻断，恢复深色模式 FOUC 防护
+- **轮询竞态**：为 `popup.js` 中的多邮箱轮询新增 `pollingInFlight` 保护，避免同一邮箱在慢请求下出现并发堆积
+- **v1 迁移清理**：`migrateFromV1` 改为迁移后显式删除旧的 `currentEmail` 键，避免写入 `null` 带来的跨浏览器兼容差异
+- **版本元数据**：同步更新扩展与包版本号至 `2.0.1`
+
+## [2.0.0] - 2026-03-27
+
+### 新增（浏览器扩展版）
+- **F-10 多邮箱管理**：最多同时保存 5 个邮箱，选项卡切换，各自独立轮询
+  - `storage.js` 新增 `getAllMailboxes` / `addMailbox` / `removeMailbox` / `getActiveMailboxId` / `setActiveMailboxId`
+  - 邮箱支持备注标签（最多 20 字），选项卡显示标签或用户名
+  - 删除邮箱时自动切换到下一个，列表为空时回到空状态
+  - v1.x `currentEmail` 数据自动迁移到新格式
+- **F-13 深色模式**：跟随系统或手动切换浅色 / 深色主题
+  - `storage.js` 新增 `getTheme` / `setTheme`
+  - `popup.html` 头部内联脚本防止切换闪烁（FOUC）
+  - 新增设置视图（头部 ⚙ 按钮进入），包含主题三档选择器
+  - `popup.css` 新增 `[data-theme="dark"]` 完整深色色彩方案
+
+### 变更
+- `popup.js` 重写为多邮箱状态管理（`pollTimers Map`、`knownMailIds Map`）
+- i18n 新增多箱和主题相关文案（中/英各 14 个新键）
+
+### 测试
+- `storage.test.js` 新增 24 条测试，总计 138 条全部通过
+
 ## [1.2.0] - 2026-03-26
 
 ### 新增（Tampermonkey 版）

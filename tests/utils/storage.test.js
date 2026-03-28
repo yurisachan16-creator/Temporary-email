@@ -3,15 +3,31 @@
  * 覆盖 browser.storage.local 封装的所有读写方法
  *
  * 存储键名约定（实现代码必须与此一致）：
- *   currentEmail — 当前使用的单个邮箱地址
- *   emailList    — 多邮箱模式下的邮箱列表（最多 5 个）
+ *   currentEmail    — 当前使用的单个邮箱地址（v1.x）
+ *   emailList       — 多邮箱字符串数组（v1.x，最多 5 个）
+ *   mailboxes       — 多邮箱对象数组（v2.0）
+ *   activeMailboxId — 当前激活邮箱 ID（v2.0）
+ *   theme           — 主题偏好 'auto' | 'light' | 'dark'（v2.0）
  */
 import {
   saveEmail,
   getEmail,
   clearEmail,
   getAllEmails,
-  saveAllEmails
+  saveAllEmails,
+  getAllMailboxes,
+  addMailbox,
+  removeMailbox,
+  getActiveMailboxId,
+  setActiveMailboxId,
+  getTheme,
+  setTheme,
+  getLanguage,
+  setLanguage,
+  getAllProviderSessions,
+  getProviderSession,
+  setProviderSession,
+  clearProviderSession,
 } from '../../src/utils/storage';
 
 // 每次测试前清空 storage，保证测试之间互相隔离
@@ -124,5 +140,276 @@ describe('saveAllEmails（保存邮箱列表）', () => {
 
   test('传入空数组时应正常保存，不抛出错误', async () => {
     await expect(saveAllEmails([])).resolves.not.toThrow();
+  });
+});
+
+// ─── getAllMailboxes（获取 v2.0 邮箱对象列表）────────
+describe('getAllMailboxes（获取邮箱对象列表）', () => {
+  test('无保存记录时应返回空数组', async () => {
+    const mailboxes = await getAllMailboxes();
+
+    expect(mailboxes).toEqual([]);
+  });
+
+  test('有保存记录时应完整返回对象数组', async () => {
+    const stored = [
+      { id: 'id1', address: 'a@xojxe.com', label: '测试', createdAt: 1000, provider: '1secmail' }
+    ];
+    await browser.storage.local.set({ mailboxes: stored });
+
+    const mailboxes = await getAllMailboxes();
+
+    expect(mailboxes).toEqual(stored);
+  });
+});
+
+// ─── addMailbox（新增邮箱对象）──────────────────────
+describe('addMailbox（新增邮箱对象）', () => {
+  test('成功时应返回包含所有必填字段的邮箱对象', async () => {
+    const mailbox = await addMailbox({ address: 'test@xojxe.com' });
+
+    expect(mailbox).toHaveProperty('id');
+    expect(mailbox).toHaveProperty('address', 'test@xojxe.com');
+    expect(mailbox).toHaveProperty('label', '');
+    expect(mailbox).toHaveProperty('createdAt');
+    expect(mailbox).toHaveProperty('provider', '1secmail');
+    // createdAt 应为合理的时间戳（大于 2026-01-01）
+    expect(mailbox.createdAt).toBeGreaterThan(1735689600000);
+  });
+
+  test('传入 label 时应保存到返回对象', async () => {
+    const mailbox = await addMailbox({ address: 'a@xojxe.com', label: 'Steam' });
+
+    expect(mailbox.label).toBe('Steam');
+  });
+
+  test('label 超过 20 字符时应自动截断', async () => {
+    const longLabel = '这是一个超过二十字符限制的备注标签名称很长很长';
+    const mailbox = await addMailbox({ address: 'a@xojxe.com', label: longLabel });
+
+    expect(mailbox.label.length).toBeLessThanOrEqual(20);
+  });
+
+  test('传入自定义 provider 时应保存到返回对象', async () => {
+    const mailbox = await addMailbox({ address: 'a@mail.tm', provider: 'mail.tm' });
+
+    expect(mailbox.provider).toBe('mail.tm');
+  });
+
+  test('新增后 getAllMailboxes 应包含该邮箱', async () => {
+    await addMailbox({ address: 'a@xojxe.com' });
+
+    const all = await getAllMailboxes();
+
+    expect(all).toHaveLength(1);
+    expect(all[0].address).toBe('a@xojxe.com');
+  });
+
+  test('传入无效邮箱地址时应抛出错误', async () => {
+    await expect(addMailbox({ address: 'not-valid' })).rejects.toThrow();
+  });
+
+  test('已有 5 个邮箱时应抛出「最多 5 个」错误', async () => {
+    // 先填满 5 个
+    for (let i = 0; i < 5; i++) {
+      await addMailbox({ address: `box${i}@xojxe.com` });
+    }
+
+    await expect(addMailbox({ address: 'extra@xojxe.com' })).rejects.toThrow();
+  });
+
+  test('多次新增后 getAllMailboxes 应保留全部邮箱', async () => {
+    await addMailbox({ address: 'a@xojxe.com' });
+    await addMailbox({ address: 'b@xojxe.com' });
+
+    const all = await getAllMailboxes();
+
+    expect(all).toHaveLength(2);
+  });
+});
+
+// ─── removeMailbox（删除邮箱对象）───────────────────
+describe('removeMailbox（删除邮箱对象）', () => {
+  test('删除后 getAllMailboxes 不再包含该邮箱', async () => {
+    const mb = await addMailbox({ address: 'a@xojxe.com' });
+
+    await removeMailbox(mb.id);
+
+    const all = await getAllMailboxes();
+    expect(all.find(m => m.id === mb.id)).toBeUndefined();
+  });
+
+  test('删除不存在的 ID 时不应抛出错误，列表保持不变', async () => {
+    await addMailbox({ address: 'a@xojxe.com' });
+
+    await expect(removeMailbox('non-existent-id')).resolves.not.toThrow();
+
+    const all = await getAllMailboxes();
+    expect(all).toHaveLength(1);
+  });
+
+  test('删除当前激活邮箱时，激活 ID 应切换到剩余第一个', async () => {
+    const mb1 = await addMailbox({ address: 'a@xojxe.com' });
+    const mb2 = await addMailbox({ address: 'b@xojxe.com' });
+    await setActiveMailboxId(mb1.id);
+
+    await removeMailbox(mb1.id);
+
+    const activeId = await getActiveMailboxId();
+    expect(activeId).toBe(mb2.id);
+  });
+
+  test('删除最后一个邮箱时，激活 ID 应变为 null', async () => {
+    const mb = await addMailbox({ address: 'a@xojxe.com' });
+    await setActiveMailboxId(mb.id);
+
+    await removeMailbox(mb.id);
+
+    const activeId = await getActiveMailboxId();
+    expect(activeId).toBeNull();
+  });
+
+  test('删除非激活邮箱时，激活 ID 不应改变', async () => {
+    const mb1 = await addMailbox({ address: 'a@xojxe.com' });
+    const mb2 = await addMailbox({ address: 'b@xojxe.com' });
+    await setActiveMailboxId(mb1.id);
+
+    await removeMailbox(mb2.id);
+
+    const activeId = await getActiveMailboxId();
+    expect(activeId).toBe(mb1.id);
+  });
+});
+
+// ─── getActiveMailboxId / setActiveMailboxId ─────────
+describe('getActiveMailboxId / setActiveMailboxId（激活邮箱 ID）', () => {
+  test('未设置时应返回 null', async () => {
+    const id = await getActiveMailboxId();
+
+    expect(id).toBeNull();
+  });
+
+  test('设置后应能正确读回', async () => {
+    await setActiveMailboxId('test-id-123');
+
+    const id = await getActiveMailboxId();
+
+    expect(id).toBe('test-id-123');
+  });
+
+  test('多次设置时应以最后一次为准', async () => {
+    await setActiveMailboxId('id-1');
+    await setActiveMailboxId('id-2');
+
+    const id = await getActiveMailboxId();
+
+    expect(id).toBe('id-2');
+  });
+});
+
+// ─── getTheme / setTheme（主题偏好）─────────────────
+describe('getTheme / setTheme（主题偏好）', () => {
+  test('未设置时默认返回 "auto"', async () => {
+    const theme = await getTheme();
+
+    expect(theme).toBe('auto');
+  });
+
+  test('设置 "light" 后应能正确读回', async () => {
+    await setTheme('light');
+
+    expect(await getTheme()).toBe('light');
+  });
+
+  test('设置 "dark" 后应能正确读回', async () => {
+    await setTheme('dark');
+
+    expect(await getTheme()).toBe('dark');
+  });
+
+  test('设置 "auto" 后应能正确读回', async () => {
+    await setTheme('dark');
+    await setTheme('auto');
+
+    expect(await getTheme()).toBe('auto');
+  });
+
+  test('传入无效值时应抛出错误', async () => {
+    await expect(setTheme('invalid')).rejects.toThrow();
+  });
+
+  test('传入无效值后 storage 中的值不应被修改', async () => {
+    await setTheme('light');
+    await expect(setTheme('xxx')).rejects.toThrow();
+
+    // 原值应保持不变
+    expect(await getTheme()).toBe('light');
+  });
+});
+
+// ─── getLanguage / setLanguage（语言偏好）────────────
+describe('getLanguage / setLanguage（语言偏好）', () => {
+  test('未设置时默认返回 "auto"', async () => {
+    expect(await getLanguage()).toBe('auto');
+  });
+
+  test('设置 "zh" 后应能正确读回', async () => {
+    await setLanguage('zh');
+
+    expect(await getLanguage()).toBe('zh');
+  });
+
+  test('设置 "en" 后应能正确读回', async () => {
+    await setLanguage('en');
+
+    expect(await getLanguage()).toBe('en');
+  });
+
+  test('设置无效值时应抛出错误', async () => {
+    await expect(setLanguage('jp')).rejects.toThrow();
+  });
+});
+
+// ─── providerSession（提供商会话映射）────────────────
+describe('providerSession（提供商会话映射）', () => {
+  test('未设置时 getAllProviderSessions 应返回空对象', async () => {
+    expect(await getAllProviderSessions()).toEqual({});
+  });
+
+  test('setProviderSession 后可通过 getProviderSession 读回指定邮箱会话', async () => {
+    const session = { provider: 'mailtm', token: 'token_1', email: 'user@mail.tm' };
+
+    await setProviderSession('user@mail.tm', session);
+
+    expect(await getProviderSession('user@mail.tm')).toEqual(session);
+  });
+
+  test('多个邮箱会话应共存于同一映射中', async () => {
+    await setProviderSession('a@mail.tm', { provider: 'mailtm', token: 'token_a' });
+    await setProviderSession('b@mail.tm', { provider: 'mailtm', token: 'token_b' });
+
+    expect(await getAllProviderSessions()).toEqual({
+      'a@mail.tm': { provider: 'mailtm', token: 'token_a' },
+      'b@mail.tm': { provider: 'mailtm', token: 'token_b' },
+    });
+  });
+
+  test('clearProviderSession(email) 仅删除指定邮箱会话', async () => {
+    await setProviderSession('a@mail.tm', { provider: 'mailtm', token: 'token_a' });
+    await setProviderSession('b@mail.tm', { provider: 'mailtm', token: 'token_b' });
+
+    await clearProviderSession('a@mail.tm');
+
+    expect(await getAllProviderSessions()).toEqual({
+      'b@mail.tm': { provider: 'mailtm', token: 'token_b' },
+    });
+  });
+
+  test('clearProviderSession() 不传参数时清空全部会话', async () => {
+    await setProviderSession('a@mail.tm', { provider: 'mailtm', token: 'token_a' });
+
+    await clearProviderSession();
+
+    expect(await getAllProviderSessions()).toEqual({});
   });
 });

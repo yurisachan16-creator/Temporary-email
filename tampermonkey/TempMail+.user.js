@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TempMail+
 // @namespace    https://github.com/yurisachan16-creator/Temporary-email
-// @version      1.1.0
+// @version      2.0.2
 // @description  一键生成临时邮箱，自动填入表单，查收邮件，用完即弃。支持中文/英文。
 // @author       yurisachan16-creator
 // @match        *://*/*
@@ -41,6 +41,7 @@ const API_BASE      = 'https://www.1secmail.com/api/v1/';
 const MAILTM_BASE   = 'https://api.mail.tm';
 const STORAGE_KEY   = 'tm_currentEmail';
 const SESSION_KEY   = 'tm_providerSession';
+const LANGUAGE_KEY  = 'tm_language';
 const POLL_INTERVAL = 10_000;  // 轮询间隔（毫秒）
 const PROVIDERS     = {
   oneSecMail: '1secmail',
@@ -73,6 +74,8 @@ let currentEmail   = null;  // 当前邮箱地址
 let currentSession = null;  // 当前邮箱会话（提供商、凭据等）
 let pollTimer      = null;  // setInterval 句柄
 let knownMailIds   = new Set();  // 已知邮件 ID，用于检测新邮件
+let currentMessages = [];   // 当前收件列表缓存（供语言切换后重绘）
+let currentDetailMessage = null;  // 当前打开的邮件详情
 let cachedDomains  = null;  // 1secmail 可用域名缓存（避免重复请求）
 let isDragging   = false;      // 拖拽状态
 let dragStartX   = 0, dragStartY  = 0;  // 拖拽起始鼠标坐标
@@ -104,6 +107,14 @@ const TRANSLATIONS = {
     auto_fill_success: '邮箱已成功填入 ✓',
     empty_desc:        '使用临时邮箱保护您的真实邮件地址\n注册完成后可直接丢弃',
     drag_hint:         '可拖动',
+    close:             '关闭',
+    language_label:    '语言',
+    language_auto:     '跟随浏览器',
+    language_zh:       '中文',
+    language_en:       'English',
+    domain_tier_cold:  '🟢 冷门',
+    domain_tier_medium:'🟡 中等',
+    domain_tier_known: '🔴 常见',
   },
   en: {
     title:             'TempMail+',
@@ -127,11 +138,30 @@ const TRANSLATIONS = {
     auto_fill_success: 'Email filled successfully ✓',
     empty_desc:        'Use a temporary email to protect your real address.\nDiscard it when done.',
     drag_hint:         'Draggable',
+    close:             'Close',
+    language_label:    'Language',
+    language_auto:     'Follow Browser',
+    language_zh:       '中文',
+    language_en:       'English',
+    domain_tier_cold:  '🟢 Low Profile',
+    domain_tier_medium:'🟡 Medium',
+    domain_tier_known: '🔴 Common',
   }
 };
 
-// 根据浏览器语言自动选择
-const lang = (navigator.language || 'zh').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+// 语言状态：支持 auto / zh / en
+let currentLanguagePreference = GM_getValue(LANGUAGE_KEY, 'auto');
+let currentLang = resolveLanguage(currentLanguagePreference);
+
+/**
+ * 根据偏好解析当前展示语言
+ * @param {string} preference
+ * @returns {string}
+ */
+function resolveLanguage(preference) {
+  if (preference === 'zh' || preference === 'en') return preference;
+  return (navigator.language || 'zh').toLowerCase().startsWith('en') ? 'en' : 'zh';
+}
 
 /**
  * 翻译键值查询
@@ -139,7 +169,28 @@ const lang = (navigator.language || 'zh').toLowerCase().startsWith('zh') ? 'zh' 
  * @returns {string}
  */
 function t(key) {
-  return (TRANSLATIONS[lang] || TRANSLATIONS.en)[key] || key;
+  return (TRANSLATIONS[currentLang] || TRANSLATIONS.en)[key] || key;
+}
+
+/**
+ * 获取当前语言偏好的显示文案
+ * @returns {string}
+ */
+function getLanguagePreferenceLabel() {
+  if (currentLanguagePreference === 'zh') return t('language_zh');
+  if (currentLanguagePreference === 'en') return t('language_en');
+  return t('language_auto');
+}
+
+/**
+ * 保存语言偏好并同步当前语言
+ * @param {string} preference
+ * @returns {void}
+ */
+function persistLanguage(preference) {
+  currentLanguagePreference = preference;
+  currentLang = resolveLanguage(preference);
+  GM_setValue(LANGUAGE_KEY, preference);
 }
 
 /* ──────────────────────────────────────────────────────
@@ -507,10 +558,10 @@ async function apiGetBestDomain() {
  * @returns {string} 例如 '🟢 冷门'
  */
 function getDomainTierLabel(domain) {
-  for (const tier of Object.values(DOMAIN_TIERS)) {
-    if (tier.domains.includes(domain)) return tier.label;
-  }
-  return '🟡 中等'; // 未知域名默认视为中等
+  if (DOMAIN_TIERS.cold.domains.includes(domain)) return t('domain_tier_cold');
+  if (DOMAIN_TIERS.medium.domains.includes(domain)) return t('domain_tier_medium');
+  if (DOMAIN_TIERS.known.domains.includes(domain)) return t('domain_tier_known');
+  return t('domain_tier_medium');
 }
 
 /**
@@ -695,18 +746,28 @@ styleEl.textContent = `
   #tm-drag-handle:active { cursor: grabbing; }
   .tm-header-icon  { font-size: 17px; }
   .tm-header-title { font-size: 14px; font-weight: 600; flex: 1; }
-  #tm-close-btn {
+  .tm-header-btn {
     background: none;
     border: none;
     color: rgba(255,255,255,0.8);
-    font-size: 20px;
     cursor: pointer;
-    padding: 0 2px;
     line-height: 1;
-    transition: color 0.1s;
     font-family: sans-serif;
+    transition: color 0.1s;
   }
-  #tm-close-btn:hover { color: #fff; }
+  .tm-header-btn:hover { color: #fff; }
+  #tm-lang-btn {
+    padding: 2px 4px;
+    font-size: 11px;
+    border: 1px solid rgba(255,255,255,0.32);
+    border-radius: 999px;
+    min-width: 42px;
+  }
+  #tm-close-btn {
+    color: rgba(255,255,255,0.8);
+    font-size: 20px;
+    padding: 0 2px;
+  }
 
   /* ── 可滚动内容区 ── */
   .tm-body {
@@ -936,10 +997,18 @@ dragHandle.innerHTML = `
   <span class="tm-header-icon">✉</span>
   <span class="tm-header-title">${t('title')}</span>
 `;
+const langBtn = document.createElement('button');
+langBtn.id = 'tm-lang-btn';
+langBtn.className = 'tm-header-btn';
+langBtn.type = 'button';
+langBtn.textContent = getLanguagePreferenceLabel();
 const closeBtn = document.createElement('button');
 closeBtn.id        = 'tm-close-btn';
-closeBtn.title     = '关闭';
+closeBtn.className = 'tm-header-btn';
+closeBtn.title     = t('close');
+closeBtn.type      = 'button';
 closeBtn.innerHTML = '×';
+dragHandle.appendChild(langBtn);
 dragHandle.appendChild(closeBtn);
 panel.appendChild(dragHandle);
 
@@ -1026,6 +1095,55 @@ shadow.appendChild(panel);
 /** 在 Shadow DOM 内通过 ID 查找元素 */
 function $s(id) { return shadow.getElementById(id); }
 
+/**
+ * 将当前语言刷新到已渲染界面
+ * @returns {void}
+ */
+function applyLanguage() {
+  dragHandle.title = t('drag_hint');
+  const titleEl = dragHandle.querySelector('.tm-header-title');
+  if (titleEl) titleEl.textContent = t('title');
+
+  langBtn.textContent = getLanguagePreferenceLabel();
+  langBtn.title = `${t('language_label')}: ${getLanguagePreferenceLabel()}`;
+  closeBtn.title = t('close');
+
+  const emptyDesc = shadow.querySelector('.tm-empty-desc');
+  if (emptyDesc) emptyDesc.textContent = t('empty_desc');
+
+  const generateBtn = $s('tm-btn-generate');
+  if (generateBtn && !generateBtn.disabled) {
+    generateBtn.textContent = t('generate');
+  }
+
+  const copyBtn = $s('tm-btn-copy');
+  if (copyBtn) copyBtn.textContent = t('copy');
+
+  const autofillBtn = $s('tm-btn-autofill');
+  if (autofillBtn) autofillBtn.textContent = t('auto_fill');
+
+  const discardBtn = $s('tm-btn-discard');
+  if (discardBtn) discardBtn.textContent = t('discard');
+
+  const refreshBtn = $s('tm-btn-refresh');
+  if (refreshBtn) refreshBtn.textContent = t('refresh');
+
+  const backBtn = $s('tm-btn-back');
+  if (backBtn) backBtn.textContent = t('back');
+
+  const inboxTitle = shadow.querySelector('.tm-inbox-title');
+  if (inboxTitle) inboxTitle.textContent = t('inbox_title');
+
+  if ($s('tm-view-main').style.display !== 'none' && currentEmail) {
+    showMain(currentEmail);
+    renderMessages(currentMessages);
+  }
+
+  if ($s('tm-view-detail').style.display !== 'none' && currentDetailMessage) {
+    showDetail(currentDetailMessage);
+  }
+}
+
 /* ──────────────────────────────────────────────────────
    HTML 转义（用于列表中的纯文本展示）
 ────────────────────────────────────────────────────── */
@@ -1045,6 +1163,7 @@ function showEmpty() {
   $s('tm-view-empty').style.display  = '';
   $s('tm-view-main').style.display   = 'none';
   $s('tm-view-detail').style.display = 'none';
+  currentDetailMessage = null;
   stopPolling();
 }
 
@@ -1052,6 +1171,7 @@ function showMain(email) {
   $s('tm-view-empty').style.display  = 'none';
   $s('tm-view-main').style.display   = '';
   $s('tm-view-detail').style.display = 'none';
+  currentDetailMessage = null;
   const el = $s('tm-email-addr');
   el.textContent = email;
   el.title       = email;
@@ -1062,7 +1182,7 @@ function showMain(email) {
   if (badge) {
     const label = getDomainTierLabel(domain);
     badge.textContent = label;
-    badge.title       = `域名信誉等级：${label}`;
+    badge.title       = label;
   }
 }
 
@@ -1070,6 +1190,7 @@ function showDetail(msg) {
   $s('tm-view-empty').style.display  = 'none';
   $s('tm-view-main').style.display   = 'none';
   $s('tm-view-detail').style.display = '';
+  currentDetailMessage = msg;
 
   $s('tm-detail-subject').textContent = msg.subject || t('no_subject');
   $s('tm-detail-from').textContent    = `${t('mail_from')}: ${msg.from || ''}`;
@@ -1097,6 +1218,7 @@ function setMailStatus(text, isError = false) {
 }
 
 function renderMessages(messages) {
+  currentMessages = Array.isArray(messages) ? messages : [];
   if (!messages || messages.length === 0) {
     setMailStatus(t('no_mail'));
     return;
@@ -1188,6 +1310,8 @@ async function handleGenerate() {
     persistSession(currentSession);
     currentEmail = email;
     knownMailIds = new Set();
+    currentMessages = [];
+    currentDetailMessage = null;
     showMain(email);
     setMailStatus(t('loading'));
     await loadMessages(email);
@@ -1227,6 +1351,8 @@ async function handleDiscard() {
   currentEmail  = null;
   currentSession = null;
   knownMailIds  = new Set();
+  currentMessages = [];
+  currentDetailMessage = null;
   showEmpty();
 }
 
@@ -1271,6 +1397,20 @@ function handleAutoFill() {
   input.dispatchEvent(new Event('change', { bubbles: true }));
   input.focus();
   showToast(t('auto_fill_success'));
+}
+
+/**
+ * 循环切换语言偏好：auto → zh → en → auto
+ * @returns {void}
+ */
+function handleCycleLanguage() {
+  const sequence = ['auto', 'zh', 'en'];
+  const index = sequence.indexOf(currentLanguagePreference);
+  const next = sequence[(index + 1) % sequence.length];
+
+  persistLanguage(next);
+  applyLanguage();
+  showToast(`${t('language_label')}: ${getLanguagePreferenceLabel()}`);
 }
 
 /* ──────────────────────────────────────────────────────
@@ -1318,6 +1458,7 @@ panel.addEventListener('click', (e) => e.stopPropagation());
 
 toggleBtn.addEventListener('click', togglePanel);
 closeBtn.addEventListener('click', () => panel.classList.add('tm-hidden'));
+langBtn.addEventListener('click', handleCycleLanguage);
 
 $s('tm-btn-generate').addEventListener('click', handleGenerate);
 $s('tm-btn-copy').addEventListener('click',     handleCopy);
@@ -1331,6 +1472,7 @@ $s('tm-btn-back').addEventListener('click',     () => showMain(currentEmail));
 ────────────────────────────────────────────────────── */
 
 (async function init() {
+  applyLanguage();
   currentEmail = readSavedEmail();
   currentSession = readSavedSession();
 

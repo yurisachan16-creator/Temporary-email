@@ -3,6 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <title>TempMail+</title>
+  <!--
+    主题初始化脚本：必须在 CSS 之前同步执行，防止深色模式出现闪烁（FOUC）
+    browser.storage 是异步的，此处使用同步的 localStorage 做镜像缓存
+  -->
+  <script src="theme-init.js"></script>
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
@@ -11,6 +16,13 @@
   <header class="header">
     <span class="header-icon">✉</span>
     <h1 class="header-title">TempMail+</h1>
+    <button
+      id="btn-settings"
+      class="header-settings-btn"
+      title="设置"
+      data-i18n-title="settings"
+      type="button"
+    >⚙</button>
   </header>
 
   <!-- ① 空状态：尚未生成邮箱 -->
@@ -18,7 +30,7 @@
     <div class="empty-view">
       <div class="empty-icon">📬</div>
       <p id="empty-desc" class="empty-desc"></p>
-      <button id="btn-generate" class="btn btn-primary btn-lg" data-i18n="generate">
+      <button id="btn-generate" class="btn btn-primary btn-lg" data-i18n="generate" type="button">
         生成临时邮箱
       </button>
     </div>
@@ -27,18 +39,47 @@
   <!-- ② 主视图：已有邮箱 -->
   <div id="view-main" hidden>
 
+    <!-- 邮箱选项卡行（F-10 多箱管理） -->
+    <div class="mailbox-tabs-wrap">
+      <div id="mailbox-tabs" class="mailbox-tabs">
+        <!-- 选项卡由 popup.js 动态生成 -->
+      </div>
+      <button
+        id="btn-new-mailbox"
+        class="tab-add-btn"
+        title="新建邮箱"
+        data-i18n-title="new_mailbox"
+        type="button"
+      >＋</button>
+    </div>
+
+    <!-- 新建邮箱内联表单（点击「＋」展开，默认隐藏） -->
+    <div id="new-mailbox-form" class="new-mailbox-form" hidden>
+      <input
+        id="mailbox-label-input"
+        class="mailbox-label-input"
+        maxlength="20"
+        data-i18n-placeholder="label_placeholder"
+      />
+      <div class="new-mailbox-form-actions">
+        <button id="btn-confirm-new" class="btn btn-primary btn-sm" data-i18n="confirm_new" type="button">生成</button>
+        <button id="btn-cancel-new"  class="btn btn-outline btn-sm"  data-i18n="cancel" type="button">取消</button>
+      </div>
+    </div>
+
     <!-- 邮箱地址栏 -->
     <div class="email-bar">
       <span id="email-address" class="email-address" title=""></span>
-      <button id="btn-copy" class="btn btn-outline" data-i18n="copy">复制</button>
+      <span id="domain-badge" class="domain-badge" title=""></span>
+      <button id="btn-copy" class="btn btn-outline" data-i18n="copy" type="button">复制</button>
     </div>
 
     <!-- 操作按钮行 -->
     <div class="actions">
-      <button id="btn-autofill" class="btn btn-primary btn-sm" data-i18n="auto_fill">
+      <button id="btn-autofill" class="btn btn-primary btn-sm" data-i18n="auto_fill" type="button">
         自动填入
       </button>
-      <button id="btn-discard" class="btn btn-danger-outline" data-i18n="discard">
+      <button id="btn-discard" class="btn btn-danger-outline" data-i18n="discard" type="button">
         🗑 丢弃
       </button>
     </div>
@@ -46,8 +87,8 @@
     <!-- 收件箱标题行 -->
     <div class="inbox-header">
       <span data-i18n="inbox_title">收件箱</span>
-      <span id="poll-indicator" class="poll-indicator" hidden title="自动刷新中">●</span>
-      <button id="btn-refresh" class="btn btn-outline btn-sm" data-i18n="refresh">刷新</button>
+      <span id="poll-indicator" class="poll-indicator" hidden title="自动刷新中" data-i18n-title="refresh">●</span>
+      <button id="btn-refresh" class="btn btn-outline btn-sm" data-i18n="refresh" type="button">刷新</button>
     </div>
 
     <!-- 邮件列表区域 -->
@@ -60,7 +101,7 @@
 
     <!-- 详情标题行 -->
     <div class="detail-header">
-      <button id="btn-back" class="btn btn-outline btn-sm" data-i18n="back">← 返回</button>
+      <button id="btn-back" class="btn btn-outline btn-sm" data-i18n="back" type="button">← 返回</button>
       <span id="detail-subject" class="detail-subject"></span>
     </div>
 
@@ -72,6 +113,39 @@
 
     <!-- 邮件正文（HTML 经 DOMPurify 消毒后渲染） -->
     <div id="detail-body" class="detail-body"></div>
+
+  </div>
+
+  <!-- ④ 设置视图（F-13 深色模式） -->
+  <div id="view-settings" hidden>
+
+    <div class="settings-header">
+      <button id="btn-settings-back" class="btn btn-outline btn-sm" data-i18n="back" type="button">← 返回</button>
+      <span data-i18n="settings_title">设置</span>
+    </div>
+
+    <div class="settings-body">
+
+      <div class="settings-row">
+        <span class="settings-label" data-i18n="language_label">语言</span>
+        <div class="language-options" id="language-options">
+          <button class="language-btn" data-value="auto"  data-i18n="language_auto" type="button">跟随浏览器</button>
+          <button class="language-btn" data-value="zh"    data-i18n="language_zh" type="button">中文</button>
+          <button class="language-btn" data-value="en"    data-i18n="language_en" type="button">English</button>
+        </div>
+      </div>
+
+      <!-- 主题选择 -->
+      <div class="settings-row">
+        <span class="settings-label" data-i18n="theme_label">主题</span>
+        <div class="theme-options" id="theme-options">
+          <button class="theme-btn" data-value="auto"  data-i18n="theme_auto" type="button">跟随系统</button>
+          <button class="theme-btn" data-value="light" data-i18n="theme_light" type="button">浅色</button>
+          <button class="theme-btn" data-value="dark"  data-i18n="theme_dark" type="button">深色</button>
+        </div>
+      </div>
+
+    </div>
 
   </div>
 
@@ -91,7 +165,7 @@
   <script src="../lib/browser-polyfill.min.js"></script>
   <script src="../lib/dompurify.min.js"></script>
   <script src="../i18n/translations.js"></script>
-  <script src="popup.js"></script>
+  <script type="module" src="popup.js"></script>
 
 </body>
 </html>

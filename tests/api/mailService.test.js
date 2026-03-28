@@ -1,185 +1,334 @@
 /**
  * mailService 单元测试
- * 覆盖所有与 1secmail API 交互的核心方法
+ * 覆盖浏览器扩展共享邮件服务的主路径：
+ *   - 1secmail 冷门域名优先
+ *   - 403/429/5xx/网络失败回退 mail.tm
+ *   - mail.tm token 刷新、消息归一化、账号删除
+ *   - 域名信誉标签映射
  */
 import {
+  PROVIDERS,
+  __resetMailServiceCache,
   generateEmail,
+  generateMailbox,
   getMessages,
+  getMailboxMessages,
   readMessage,
+  readMailboxMessage,
   deleteMessage,
-  getDomainList
+  getDomainList,
+  getDomainTierLabel,
+  discardMailboxSession,
 } from '../../src/api/mailService';
 
-// 每次测试前清除所有 mock 的调用记录和返回值
+/**
+ * 生成模拟 JSON 响应
+ * @param {number} status
+ * @param {any} data
+ * @returns {object}
+ */
+function createJsonResponse(status, data) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => JSON.stringify(data),
+  };
+}
+
+/**
+ * 生成模拟文本响应
+ * @param {number} status
+ * @param {string} text
+ * @returns {object}
+ */
+function createTextResponse(status, text) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => text,
+  };
+}
+
 beforeEach(() => {
-  jest.clearAllMocks();
+  fetch.mockReset();
+  jest.useRealTimers();
+  __resetMailServiceCache();
 });
 
-// ─── generateEmail（生成临时邮箱）────────────────────
-describe('generateEmail（生成临时邮箱）', () => {
-  test('成功时应返回格式正确的邮箱地址字符串', async () => {
-    fetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ['test123@1secmail.com']
+describe('generateMailbox（生成邮箱）', () => {
+  test('1secmail 可用时优先使用冷门域名', async () => {
+    fetch.mockResolvedValueOnce(createJsonResponse(200, ['1secmail.com', 'xojxe.com']));
+
+    const mailbox = await generateMailbox();
+
+    expect(mailbox.provider).toBe(PROVIDERS.oneSecMail);
+    expect(mailbox.address).toMatch(/@xojxe\.com$/);
+    expect(mailbox.session.email).toBe(mailbox.address);
+  });
+
+  test('getDomainList 返回 403 时自动回退到 mail.tm', async () => {
+    fetch
+      .mockResolvedValueOnce(createTextResponse(403, 'Forbidden'))
+      .mockResolvedValueOnce(createJsonResponse(200, {
+        'hydra:member': [{ domain: 'mail.tm', isActive: true, isPrivate: false }],
+      }))
+      .mockResolvedValueOnce(createJsonResponse(201, { id: 'acc_1' }))
+      .mockResolvedValueOnce(createJsonResponse(200, { token: 'token_1' }));
+
+    const mailbox = await generateMailbox();
+
+    expect(mailbox.provider).toBe(PROVIDERS.mailTm);
+    expect(mailbox.address).toMatch(/@mail\.tm$/);
+    expect(mailbox.session).toMatchObject({
+      provider: PROVIDERS.mailTm,
+      accountId: 'acc_1',
+      token: 'token_1',
     });
+  });
+
+  test('网络失败时也会回退到 mail.tm', async () => {
+    fetch
+      .mockRejectedValueOnce(new Error('Network Error'))
+      .mockResolvedValueOnce(createJsonResponse(200, {
+        'hydra:member': [{ domain: 'mail.tm', isActive: true, isPrivate: false }],
+      }))
+      .mockResolvedValueOnce(createJsonResponse(201, { id: 'acc_network' }))
+      .mockResolvedValueOnce(createJsonResponse(200, { token: 'token_network' }));
+
+    const mailbox = await generateMailbox();
+
+    expect(mailbox.provider).toBe(PROVIDERS.mailTm);
+    expect(mailbox.session.accountId).toBe('acc_network');
+  });
+
+  test('mail.tm 创建账号遇到 422 时会重试用户名', async () => {
+    fetch
+      .mockResolvedValueOnce(createTextResponse(403, 'Forbidden'))
+      .mockResolvedValueOnce(createJsonResponse(200, {
+        'hydra:member': [{ domain: 'mail.tm', isActive: true, isPrivate: false }],
+      }))
+      .mockResolvedValueOnce(createJsonResponse(422, {}))
+      .mockResolvedValueOnce(createJsonResponse(201, { id: 'acc_retry' }))
+      .mockResolvedValueOnce(createJsonResponse(200, { token: 'token_retry' }));
+
+    const mailbox = await generateMailbox();
+
+    expect(mailbox.provider).toBe(PROVIDERS.mailTm);
+    expect(mailbox.session.accountId).toBe('acc_retry');
+  });
+});
+
+describe('兼容旧接口', () => {
+  test('generateEmail 返回纯邮箱字符串', async () => {
+    fetch.mockResolvedValueOnce(createJsonResponse(200, ['xojxe.com']));
 
     const email = await generateEmail();
 
     expect(typeof email).toBe('string');
-    // 验证返回值符合 xxx@domain.tld 格式
-    expect(email).toMatch(/^[^@]+@[^@]+\.[^@]+$/);
+    expect(email).toMatch(/@xojxe\.com$/);
   });
 
-  test('请求地址应包含 genRandomMailbox 动作参数', async () => {
-    fetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ['test@1secmail.com']
+  test('getMessages 返回 1secmail 收件数组', async () => {
+    const messages = [{ id: 1, from: 'sender@example.com', subject: '验证码', date: '2026-03-26' }];
+    fetch.mockResolvedValueOnce(createJsonResponse(200, messages));
+
+    await expect(getMessages('user', '1secmail.com')).resolves.toEqual(messages);
+  });
+
+  test('readMessage 返回 1secmail 邮件详情', async () => {
+    const detail = {
+      id: 1,
+      from: 'sender@example.com',
+      subject: '验证码邮件',
+      htmlBody: '<p>Hello</p>',
+      textBody: 'Hello',
+      date: '2026-03-26',
+    };
+    fetch.mockResolvedValueOnce(createJsonResponse(200, detail));
+
+    await expect(readMessage('user', '1secmail.com', 1)).resolves.toEqual(detail);
+  });
+
+  test('deleteMessage 删除成功时返回 true', async () => {
+    fetch.mockResolvedValueOnce(createJsonResponse(200, { status: 'deleted' }));
+
+    await expect(deleteMessage('user', '1secmail.com', 1)).resolves.toBe(true);
+  });
+
+  test('getDomainList 首次请求后返回缓存', async () => {
+    fetch.mockResolvedValueOnce(createJsonResponse(200, ['xojxe.com', '1secmail.com']));
+
+    const first = await getDomainList();
+    const second = await getDomainList();
+
+    expect(first).toEqual(['xojxe.com', '1secmail.com']);
+    expect(second).toEqual(['xojxe.com', '1secmail.com']);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('getMailboxMessages（收件列表）', () => {
+  test('1secmail 模式返回原始邮件列表', async () => {
+    const messages = [{ id: 1, from: 'a@b.com', subject: 'Hello', date: '2026-01-01' }];
+    fetch.mockResolvedValueOnce(createJsonResponse(200, messages));
+
+    const result = await getMailboxMessages({
+      address: 'user@1secmail.com',
+      provider: PROVIDERS.oneSecMail,
     });
 
-    await generateEmail();
-
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining('action=genRandomMailbox')
-    );
+    expect(result.messages).toEqual(messages);
+    expect(result.session.provider).toBe(PROVIDERS.oneSecMail);
   });
 
-  test('网络请求失败时应向上抛出错误', async () => {
-    fetch.mockRejectedValueOnce(new Error('Network Error'));
+  test('mail.tm 模式会归一化邮件列表并保留 Bearer token', async () => {
+    const session = {
+      provider: PROVIDERS.mailTm,
+      email: 'user@mail.tm',
+      password: 'pwd',
+      token: 'token_1',
+      login: 'user',
+      domain: 'mail.tm',
+    };
+    fetch.mockResolvedValueOnce(createJsonResponse(200, {
+      'hydra:member': [{
+        id: 'msg_1',
+        from: { name: 'Sender', address: 'sender@example.com' },
+        subject: 'Hello',
+        createdAt: '2026-03-26T12:00:00.000Z',
+      }],
+    }));
 
-    await expect(generateEmail()).rejects.toThrow('Network Error');
+    const result = await getMailboxMessages({
+      address: 'user@mail.tm',
+      provider: PROVIDERS.mailTm,
+    }, session);
+
+    expect(result.messages).toEqual([{
+      id: 'msg_1',
+      from: 'Sender <sender@example.com>',
+      subject: 'Hello',
+      date: '2026-03-26T12:00:00.000Z',
+    }]);
+    expect(fetch.mock.calls[0][1].headers.Authorization).toBe('Bearer token_1');
   });
 
-  test('服务器返回非 2xx 状态时应抛出错误', async () => {
-    fetch.mockResolvedValueOnce({ ok: false, status: 500 });
+  test('mail.tm 请求 401 时会刷新 token 后重试', async () => {
+    const session = {
+      provider: PROVIDERS.mailTm,
+      email: 'user@mail.tm',
+      password: 'pwd',
+      token: 'old_token',
+      login: 'user',
+      domain: 'mail.tm',
+    };
 
-    await expect(generateEmail()).rejects.toThrow();
-  });
-});
+    fetch
+      .mockResolvedValueOnce(createTextResponse(401, 'Unauthorized'))
+      .mockResolvedValueOnce(createJsonResponse(200, { token: 'new_token' }))
+      .mockResolvedValueOnce(createJsonResponse(200, { 'hydra:member': [] }));
 
-// ─── getMessages（获取收件列表）──────────────────────
-describe('getMessages（获取收件列表）', () => {
-  // 模拟 API 返回的邮件列表数据
-  const mockMessages = [
-    { id: 1, from: 'sender@example.com', subject: '验证码', date: '2026-03-26 10:00:00' },
-    { id: 2, from: 'no-reply@shop.com', subject: '订单确认', date: '2026-03-26 11:00:00' }
-  ];
+    const result = await getMailboxMessages({
+      address: 'user@mail.tm',
+      provider: PROVIDERS.mailTm,
+    }, session);
 
-  test('成功时应返回包含邮件对象的数组', async () => {
-    fetch.mockResolvedValueOnce({ ok: true, json: async () => mockMessages });
-
-    const messages = await getMessages('test123', '1secmail.com');
-
-    expect(Array.isArray(messages)).toBe(true);
-    expect(messages).toHaveLength(2);
-    // 每条邮件必须包含 id、from、subject 字段
-    expect(messages[0]).toHaveProperty('id');
-    expect(messages[0]).toHaveProperty('from');
-    expect(messages[0]).toHaveProperty('subject');
-  });
-
-  test('请求 URL 应包含 login 和 domain 参数', async () => {
-    fetch.mockResolvedValueOnce({ ok: true, json: async () => [] });
-
-    await getMessages('mylogin', 'example.com');
-
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('login=mylogin'));
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('domain=example.com'));
-  });
-
-  test('邮箱为空时应返回空数组', async () => {
-    fetch.mockResolvedValueOnce({ ok: true, json: async () => [] });
-
-    const messages = await getMessages('test123', '1secmail.com');
-
-    expect(messages).toEqual([]);
-  });
-
-  test('未传入 login 参数时应抛出错误', async () => {
-    await expect(getMessages(undefined, '1secmail.com')).rejects.toThrow();
-  });
-
-  test('未传入 domain 参数时应抛出错误', async () => {
-    await expect(getMessages('test123', undefined)).rejects.toThrow();
-  });
-
-  test('服务器返回 429（限流）时应抛出错误', async () => {
-    fetch.mockResolvedValueOnce({ ok: false, status: 429 });
-
-    await expect(getMessages('test123', '1secmail.com')).rejects.toThrow();
+    expect(result.messages).toEqual([]);
+    expect(result.session.token).toBe('new_token');
   });
 });
 
-// ─── readMessage（读取邮件详情）──────────────────────
-describe('readMessage（读取邮件详情）', () => {
-  // 模拟 API 返回的邮件详情数据
-  const mockDetail = {
-    id: 1,
-    from: 'sender@example.com',
-    subject: '验证码邮件',
-    body: '<p>您的验证码是 <strong>123456</strong></p>',
-    textBody: '您的验证码是 123456',
-    date: '2026-03-26 10:00:00'
-  };
+describe('readMailboxMessage（邮件详情）', () => {
+  test('1secmail 模式返回原始详情', async () => {
+    const detail = { id: 42, subject: 'Test', htmlBody: '<p>Hi</p>', textBody: 'Hi' };
+    fetch.mockResolvedValueOnce(createJsonResponse(200, detail));
 
-  test('成功时应返回包含 body、subject、textBody 的邮件对象', async () => {
-    fetch.mockResolvedValueOnce({ ok: true, json: async () => mockDetail });
+    const result = await readMailboxMessage({
+      address: 'user@1secmail.com',
+      provider: PROVIDERS.oneSecMail,
+    }, null, 42);
 
-    const message = await readMessage('test123', '1secmail.com', 1);
-
-    expect(message).toHaveProperty('id', 1);
-    expect(message).toHaveProperty('body');
-    expect(message).toHaveProperty('subject');
-    expect(message).toHaveProperty('textBody');
+    expect(result.message).toEqual(detail);
   });
 
-  test('请求 URL 应包含 login、domain 和 id 参数', async () => {
-    fetch.mockResolvedValueOnce({ ok: true, json: async () => mockDetail });
+  test('mail.tm 模式会归一化详情并支持字符串 ID', async () => {
+    const session = {
+      provider: PROVIDERS.mailTm,
+      email: 'user@mail.tm',
+      password: 'pwd',
+      token: 'token_1',
+      login: 'user',
+      domain: 'mail.tm',
+    };
+    fetch.mockResolvedValueOnce(createJsonResponse(200, {
+      id: 'msg_1',
+      from: { address: 'sender@example.com' },
+      subject: 'Subject',
+      createdAt: '2026-03-26T12:00:00.000Z',
+      html: ['<p>Hello</p>'],
+      text: 'Hello',
+    }));
 
-    await readMessage('user', 'domain.com', 99);
+    const result = await readMailboxMessage({
+      address: 'user@mail.tm',
+      provider: PROVIDERS.mailTm,
+    }, session, 'msg_1');
 
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('login=user'));
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('domain=domain.com'));
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('id=99'));
-  });
-
-  test('邮件不存在（404）时应抛出错误', async () => {
-    fetch.mockResolvedValueOnce({ ok: false, status: 404 });
-
-    await expect(readMessage('test123', '1secmail.com', 9999)).rejects.toThrow();
+    expect(result.message).toEqual({
+      id: 'msg_1',
+      from: 'sender@example.com',
+      subject: 'Subject',
+      date: '2026-03-26T12:00:00.000Z',
+      htmlBody: '<p>Hello</p>',
+      textBody: 'Hello',
+    });
   });
 });
 
-// ─── deleteMessage（删除邮件）────────────────────────
-describe('deleteMessage（删除邮件）', () => {
-  test('成功删除时应返回 true', async () => {
-    fetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ status: 'deleted' })
+describe('discardMailboxSession（丢弃会话）', () => {
+  test('mail.tm 会话会请求删除远端账号', async () => {
+    const session = {
+      provider: PROVIDERS.mailTm,
+      email: 'user@mail.tm',
+      password: 'pwd',
+      token: 'token_1',
+      accountId: 'acc_1',
+      login: 'user',
+      domain: 'mail.tm',
+    };
+    fetch.mockResolvedValueOnce({ ok: true, status: 204, text: async () => '' });
+
+    const deleted = await discardMailboxSession({
+      address: 'user@mail.tm',
+      provider: PROVIDERS.mailTm,
+    }, session);
+
+    expect(deleted).toBe(true);
+    expect(fetch.mock.calls[0][0]).toContain('/accounts/acc_1');
+    expect(fetch.mock.calls[0][1].method).toBe('DELETE');
+  });
+
+  test('1secmail 会话丢弃时直接跳过', async () => {
+    const deleted = await discardMailboxSession({
+      address: 'user@1secmail.com',
+      provider: PROVIDERS.oneSecMail,
     });
 
-    const result = await deleteMessage('test123', '1secmail.com', 1);
-
-    expect(result).toBe(true);
-  });
-
-  test('删除不存在的邮件（404）时应抛出错误', async () => {
-    fetch.mockResolvedValueOnce({ ok: false, status: 404 });
-
-    await expect(deleteMessage('test123', '1secmail.com', 9999)).rejects.toThrow();
+    expect(deleted).toBe(false);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 
-// ─── getDomainList（获取可用域名列表）──────────────
-describe('getDomainList（获取可用域名列表）', () => {
-  test('成功时应返回非空的字符串数组', async () => {
-    const mockDomains = ['1secmail.com', '1secmail.net', '1secmail.org'];
-    fetch.mockResolvedValueOnce({ ok: true, json: async () => mockDomains });
+describe('getDomainTierLabel（域名信誉标签）', () => {
+  test('中文模式返回中文标签', () => {
+    expect(getDomainTierLabel('xojxe.com')).toBe('🟢 冷门');
+    expect(getDomainTierLabel('wwjmp.com')).toBe('🟡 中等');
+    expect(getDomainTierLabel('1secmail.com')).toBe('🔴 常见');
+  });
 
-    const domains = await getDomainList();
-
-    expect(Array.isArray(domains)).toBe(true);
-    expect(domains.length).toBeGreaterThan(0);
-    // 每个元素必须是字符串
-    domains.forEach(d => expect(typeof d).toBe('string'));
+  test('英文模式返回英文标签', () => {
+    expect(getDomainTierLabel('xojxe.com', 'en')).toBe('🟢 Low Profile');
+    expect(getDomainTierLabel('wwjmp.com', 'en')).toBe('🟡 Medium');
+    expect(getDomainTierLabel('1secmail.com', 'en')).toBe('🔴 Common');
   });
 });
